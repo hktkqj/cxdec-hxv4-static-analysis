@@ -1,133 +1,188 @@
 # Sanoba Witch XP3 资源逆向分析
 
-本仓库记录 **Sabbat of the Witch for Steam（サノバウィッチ / Sanoba Witch）** XP3 资源包的自定义加密层逆向分析与离线还原工具。
+本仓库记录 **Sabbat of the Witch for Steam / Sanoba Witch** 的 XP3 资源保护分析与提取工具。
 
----
+当前项目保留两条路线：
 
-## 概述
+| 路线 | 状态 | 用途 |
+|------|------|------|
+| 纯静态分析与提取 | 当前推荐 | 不启动游戏、不附加调试器，直接从原始 EXE 和 XP3 文件恢复解密状态 |
+| 动态 dump / 运行时抓取 | 历史流程与交叉验证 | 在静态流程未打通前，通过运行时 dump 或断点抓参取得 FilterManager 状态 |
 
-游戏使用 Kirikiri/TVP 引擎的 `.xp3` 容器打包资源，但在此基础上增加了 **自定义加密层**（运行时随机 DLL + Hxv4 映射表 + DripValue VM 密钥派生 + 四层 Stream XOR Filter），使得标准 XP3 工具（如 GarBro、krkrz 等）无法直接解包。
+核心结论：Sanoba 当前样本已经可以走纯静态流程得到可用的 `drip_program.json`，不再需要运行时 dump。
 
-本项目完全离线移植了上述加密逻辑到 Python，实现了：
+## 纯静态分析与提取
 
-- **10 个 XP3 包** 的完整解析与索引恢复
-- **Hxv4 映射表** 的 XChaCha20-Poly1305 解密与 TJS Variant 解析
-- **DripValue VM**（20 个操作码）的纯 Python 解释器
-- **FilterRuntimeState** 四层 XOR 变换的静态应用
-
----
-
-## 仓库结构
-
-```plain
-sanobawitchi_xp3analysis/
-├── README.md                              # 本文件 — 仓库总览
-├── Reverse.md                             # 逆向分析文档（全流程 + 详细链接）
-├── XP3Extract.md                          # XP3 格式解析文档
-├── Hxv4Ripped.md                          # Hxv4 加密体系解析文档
-├── TryItOut.md                            # 复现操作文档（从零开始）
-│
-├── src/                                   # Python 脚本源码
-│   ├── xp3_inspect.py                     #   主入口：XP3 解析 / 提取 / 验证
-│   ├── inspect_manager_dump.py            #   运行时 minidump 状态导出
-│   ├── watch_random_plugin_dump.py        #   运行时监控 dump 捕获
-│   ├── minidump_process.py                #   全内存 minidump 创建工具
-│   ├── tjs2_inspect.py                    #   TJS2100 字节码检查器
-│   ├── ida_tvp_xp3_labels.py              #   IDA Pro 标签辅助脚本
-│   └── parse_dialogue.py                  #   编译后 KAG 脚本对话解析器
-│
-├── data/                                  # 参考数据文件
-│   ├── manager_ready.drip_program.json    #   DripValue VM 核心状态（离线提取必需）
-│   ├── scn.hxv4.json                      #   scn.xp3 的 Hxv4 映射表（全量 27 条记录）
-│   └── scn.filter_states.json             #   scn.xp3 的 per-entry filter state
-│
-├── sample/                                # 文件格式样本（以 scn.xp3 为样例）
-│   ├── scn.xp3                            #   完整 scn.xp3 文件 (2.2 MB, 26 entry)
-│   ├── xp3_header.bin                     #   XP3 文件头 (64 bytes)
-│   ├── scn_index_decompressed.bin         #   解压后的 XP3 index (2888 bytes)
-│   ├── scn_hxv4_descriptor.bin            #   Hxv4 chunk descriptor (14 bytes)
-│   ├── scn_hxv4_encrypted_payload.bin     #   Hxv4 加密 payload (1335 bytes)
-│   └── scn.filter_states.json             #   scn.xp3 的 filter state 样例
-│
-└── output/                                # 完整提取结果（以 scn.xp3 为例）
-    └── scn/
-        ├── manifest.jsonl                 #   提取清单（26 条，含 Adler32 校验）
-        └── scn/
-            ├── entry_00001_5001.bin       #   提取的二进制文件（mdf 容器，zlib 压缩）
-            ├── entry_00002_5002.bin       #
-            ├── ...                        #   共 26 个 bin 文件，全部 Adler32 校验通过
-            └── entry_00026_501a.bin       #
-```
-
----
-
-## 提取结果
-
-| 包文件 | 条目数 | 状态 | 典型内容 |
-| -------- | -------- | ------ | ---------- |
-| `allage.xp3` | 91 | 全部成功 | 全年龄版资源 |
-| `bgimage.xp3` | 108 | 全部成功 | 背景图像 |
-| `bgm.xp3` | 93 | 全部成功 | 背景音乐 (OGG) |
-| `data.xp3` | 4,087 | 全部成功 | 游戏核心数据 |
-| `evimage.xp3` | 319 | 全部成功 | 事件图像 |
-| `fgimage.xp3` | 1,554 | 全部成功 | 前景图像 |
-| **`scn.xp3`** | **26** | **全部成功（见 output/）** | **场景脚本 (KAG)** |
-| `steam.xp3` | 3 | 全部成功 | Steam 集成数据 |
-| `video.xp3` | 12 | 全部成功 | 视频文件 |
-| `voice.xp3` | 28,988 | 全部成功 | 语音文件 |
-
----
-
-## 核心技术栈
-
-| 层次 | 组件 | 算法/技术 |
-| ------ | ------ | ----------- |
-| 容器 | XP3 Archive | 自定义 index offset (0x20 qword) |
-| 索引 | zlib compressed index | 标准 XP3 File/info/segm/adlr chunk |
-| 映射 | Hxv4 Table | **XChaCha20-Poly1305** + zlib + TJS Variant |
-| 派生 | DripValue VM | 128 条 lane × N 条 record，20 个操作码 |
-| 过滤 | FilterRuntimeState | 四层 XOR（Bulk / Split Boundary / Rotated Dword / Boundary Byte） |
-| 校验 | Adler32 | 标准 XP3 adlr chunk 校验 |
-
----
-
-## 快速开始（使用仓库内 scn.xp3 样本）
+静态流程入口：
 
 ```powershell
-# 1. 验证 scn.xp3 的 filter 正确性
-python src/xp3_inspect.py verify ./sample/scn.xp3 \
-  --filter recovered --drip-program ./data/manager_ready.drip_program.json
-
-# 2. 提取 scn.xp3 全部内容
-python src/xp3_inspect.py extract-all ./output_test/scn ./sample/scn.xp3 \
-  --filter recovered --drip-program ./data/manager_ready.drip_program.json
-
-# 3. 查看 Hxv4 映射表
-python src/xp3_inspect.py hxv4 ./sample/scn.xp3 --samples 30 \
-  --drip-program ./data/manager_ready.drip_program.json
+python src\static_extract\static_xp3_recover.py
 ```
 
-提取结果（26/26 成功，filter_applied=true，adler_ok=true）已预置于 [output/scn/](output/scn/)。
+该流程完成的工作：
 
----
+1. 从原始 `SabbatOfTheWitch.exe` 的 PE Resources 提取 `STARTUP.TJS`、`BOOTSTRAP`、`PLUGIN` 和 `TEXT/127`。
+2. 从原始 EXE `PE RVA 0x2E4A00` 读取 0x2000 字节 bres salt，并用 `STARTUP.TJS -> TJS2100\0` 校验。
+3. 用 `SHA3-384(path_key_utf16le + salt) + ChaCha8` 解密 bres:// 资源。
+4. 解析 `STARTUP.TJS` 的 TJS2 常量池，取得 BOOTSTRAP URL 和脚本级 `System.bootStrap` 参数。
+5. 解密 `BOOTSTRAP`，跳过 8 字节 header 后 zlib 解压出随机加密 DLL。
+6. 读取 DLL 配置表中的 `UNIQUE` 和 `WARNING`。
+7. 按 DLL 内 `System_bootStrap_callback` 的真实逻辑拼出最终 bootstrap 字符串。
+8. 调用 `FilterManagerDerive` 离线加载 DLL，执行内部派生函数，生成 `data/static_recover/sanoba.static.drip_program.json`。
+9. 使用该 JSON 验证或提取 XP3。
 
-## 文档导航
+验证 `scn.xp3`：
 
-- **[Reverse.md](Reverse.md)** — 逆向分析全流程，包含代码引用链接
-- **[XP3Extract.md](XP3Extract.md)** — XP3 容器格式详解
-- **[Hxv4Ripped.md](Hxv4Ripped.md)** — Hxv4 加密体系完整分析
-- **[TryItOut.md](TryItOut.md)** — 一步步复现操作指南
+```powershell
+python src\static_extract\static_xp3_recover.py `
+  --xp3 "F:\SteamLibrary\steamapps\common\sanoba witch\scn.xp3" `
+  --verify
+```
 
----
+已验证结果：
+
+```text
+scn.xp3: checked=26 failed=0 unresolved_filter=0
+hxv4_key    = e4dc1d99d9d9fb1ae5f7529ee70f841bfadb13d12f4d22b99170d6cc6a62bc54
+hxv4_nonce0 = d99230e02623f4a0c4f2857682b4de6dfefe820b57060e50
+hxv4_nonce1 = b96f89630850dd23a13810c7718ad003936d1d4a3ae00890
+```
+
+详细文档：
+
+- [纯静态 FilterManager 派生流程](docs/static/DeriveFilterManager_Static.md)
+- [XP3 容器结构解析](docs/core/XP3Extract.md)
+- [Hxv4 / DripValue / FilterRuntimeState 分析](docs/core/Hxv4Ripped.md)
+
+## 动态 Dump / 运行时抓取
+
+动态流程是早期路线，用于在最终 bootstrap 字符串尚未静态确认时，从运行时对象中获得正确状态。
+
+该流程完成的工作：
+
+1. 正常启动或附加游戏进程。
+2. 监控 `%TEMP%\krkr_...\<random>.dll` 随机插件加载。
+3. 在随机 DLL 的 `System_bootStrap_callback` 内部调用前后抓取参数，或等待 FilterManager 初始化完成后 dump 进程内存。
+4. 从 full-memory minidump 导出 `context_u32`、`lanes`、`holder_words`。
+5. 将 live dump 的 context 与已确认的 Hxv4 key/nonce 合并为 `data/sanoba_complete.drip_program.json`。
+6. 用 `src\common\xp3_inspect.py` 验证或提取 XP3。
+
+主要脚本：
+
+```text
+src/dynamic_capture/capture_bootstrap_args.py
+src/dynamic_capture/watch_random_plugin_dump.py
+src/dynamic_capture/inspect_manager_dump.py
+src/dynamic_capture/minidump_process.py
+src/dynamic_capture/build_complete_drip.py
+```
+
+详细文档：
+
+- [LiveDump 版 FilterManager 派生流程](docs/live_dump/DeriveFilterManager_LiveDump.md)
+- [从零复现操作记录](docs/usage/TryItOut.md)
+- [总体逆向分析流程](docs/core/Reverse.md)
+- [DLL 配置差异分析](docs/diff/DllDiff.md)
+
+## 代码结构
+
+```plain
+src/
+├── static_extract/                 # 纯静态提取闭环
+│   ├── static_xp3_recover.py       # 静态恢复 bres 资源、DLL 和 drip_program.json
+│   └── recover_bres_salt.py        # 从原始 EXE 提取并校验 bres salt
+│
+├── dynamic_capture/                # 动态 dump / 运行时抓取
+│   ├── capture_bootstrap_args.py   # 抓取 System.bootStrap 参数
+│   ├── watch_random_plugin_dump.py # 监控随机 DLL 并创建 dump
+│   ├── inspect_manager_dump.py     # 从 dump 导出 FilterManager 状态
+│   ├── minidump_process.py         # 创建 full-memory minidump
+│   └── build_complete_drip.py      # 合并 live dump context 与 Hxv4 参数
+│
+└── common/                         # 两条路线共用代码
+    ├── xp3_inspect.py              # XP3 验证 / 提取 / Hxv4 解析主入口
+    ├── decrypt_bres_resource.py    # bres:// SHA3-384 + ChaCha8 解密
+    ├── tjs2_inspect.py             # TJS2100 字节码检查
+    ├── parse_dialogue.py           # KAG 对话解析
+    ├── read_dll_config.py          # DLL 配置表读取
+    ├── compare_drip.py             # drip_program 对比
+    ├── disasm_bootstrap.py         # BOOTSTRAP DLL 辅助反汇编
+    └── ida_tvp_xp3_labels.py       # IDA 标签辅助
+```
+
+## 文档结构
+
+```plain
+docs/
+├── static/
+│   └── DeriveFilterManager_Static.md      # 当前推荐的纯静态闭环
+├── live_dump/
+│   └── DeriveFilterManager_LiveDump.md    # 早期动态 dump 闭环
+├── core/
+│   ├── Reverse.md                         # 总体逆向分析流程
+│   ├── XP3Extract.md                      # XP3 容器格式
+│   └── Hxv4Ripped.md                      # Hxv4 / DripValue / FilterRuntimeState
+├── diff/
+│   └── DllDiff.md                         # 不同随机 DLL 配置差异
+└── usage/
+    └── TryItOut.md                        # 历史复现命令和实验记录
+```
+
+## 常用命令
+
+生成静态 `drip_program.json`：
+
+```powershell
+python src\static_extract\static_xp3_recover.py
+```
+
+指定 salt 来源程序和 PE RVA：
+
+```powershell
+python src\static_extract\static_xp3_recover.py `
+  --runtime-exe "F:\SteamLibrary\steamapps\common\sanoba witch\SabbatOfTheWitch.exe" `
+  --salt-rva 0x2E4A00
+```
+
+指定 salt 来源程序和文件偏移：
+
+```powershell
+python src\static_extract\static_xp3_recover.py `
+  --runtime-exe "F:\SteamLibrary\steamapps\common\sanoba witch\SabbatOfTheWitch.exe" `
+  --salt-file-offset 0x2E3200
+```
+
+单独恢复 bres salt：
+
+```powershell
+python src\static_extract\recover_bres_salt.py --out salt_F44A00.bin
+```
+
+验证 XP3：
+
+```powershell
+python src\common\xp3_inspect.py verify `
+  --filter recovered `
+  --drip-program data\static_recover\sanoba.static.drip_program.json `
+  "F:\SteamLibrary\steamapps\common\sanoba witch\scn.xp3"
+```
+
+提取 XP3：
+
+```powershell
+python src\common\xp3_inspect.py extract-all out\scn `
+  --filter recovered `
+  --drip-program data\static_recover\sanoba.static.drip_program.json `
+  "F:\SteamLibrary\steamapps\common\sanoba witch\scn.xp3"
+```
 
 ## 环境要求
 
 - Python 3.9+
-- PyCryptodome (`pip install pycryptodome`)
-- Windows 环境（运行时 dump 捕获需要；离线提取可跨平台）
-
----
+- PyCryptodome
+- .NET 8 x86 runtime / SDK，用于运行 `tools/FilterManagerDerive`
+- Windows 环境；纯静态分析不需要启动游戏，动态 dump 工具需要 Windows 调试和进程读取 API
 
 ## 许可说明
 
-本项目为逆向工程研究目的创建，仅应用于已合法购买的游戏资源备份与格式分析。仓库中的脚本和分析文档均基于对游戏程序的静态/动态分析独立编写，不包含游戏的原始代码或资源文件。
+本项目仅用于逆向工程研究和已合法购买资源的格式分析。仓库中的脚本和文档基于静态/动态分析独立编写，不包含游戏原始代码或资源文件。

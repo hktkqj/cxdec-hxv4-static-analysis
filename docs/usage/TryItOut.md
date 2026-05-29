@@ -46,7 +46,7 @@ video.xp3    voice.xp3
 使用 `watch_random_plugin_dump.py` 监控游戏进程，在随机 DLL 的 FilterManager 就绪时自动 dump：
 
 ```powershell
-python src/watch_random_plugin_dump.py `
+python src/dynamic_capture/watch_random_plugin_dump.py `
   --attach-name SabbatOfTheWitch.exe `
   --manager-slot-rva 0xAC9AC `
   --deref-manager0 `
@@ -62,7 +62,7 @@ python src/watch_random_plugin_dump.py `
 ### A.2 验证 Dump 有效性
 
 ```powershell
-python src/inspect_manager_dump.py ./manager_ready.full.dmp `
+python src/dynamic_capture/inspect_manager_dump.py ./manager_ready.full.dmp `
   --manager-slot-rva 0xAC9AC
 ```
 
@@ -78,7 +78,7 @@ drip impl          -> 0x06534FC8 (mapped)
 ### A.3 导出 Drip Program
 
 ```powershell
-python src/inspect_manager_dump.py ./manager_ready.full.dmp `
+python src/dynamic_capture/inspect_manager_dump.py ./manager_ready.full.dmp `
   --manager-slot-rva 0xAC9AC `
   --out-prefix ./manager_ready
 ```
@@ -101,7 +101,7 @@ wrote manager_ready.drip_program.json (128 lanes, 3106 context dwords)
 在提取前，先验证 recovered filter 是否与运行时一致：
 
 ```powershell
-python src/xp3_inspect.py verify ./bgm.xp3 `
+python src/common/xp3_inspect.py verify ./bgm.xp3 `
   --filter recovered `
   --drip-program ./data/manager_ready.drip_program.json
 ```
@@ -116,7 +116,7 @@ bgm.xp3: checked=93 failed=0 unresolved_filter=0
 
 ```powershell
 @("allage","bgimage","bgm","data","evimage","fgimage","scn","steam","video","voice") | ForEach-Object {
-  python src/xp3_inspect.py verify "./$_.xp3" `
+  python src/common/xp3_inspect.py verify "./$_.xp3" `
     --filter recovered `
     --drip-program ./data/manager_ready.drip_program.json
 }
@@ -129,13 +129,13 @@ bgm.xp3: checked=93 failed=0 unresolved_filter=0
 ### C.1 查看 XP3 摘要
 
 ```powershell
-python src/xp3_inspect.py summary ./data.xp3 --samples 5
+python src/common/xp3_inspect.py summary ./data.xp3 --samples 5
 ```
 
 ### C.2 查看 Hxv4 映射表
 
 ```powershell
-python src/xp3_inspect.py hxv4 ./data.xp3 --samples 10 `
+python src/common/xp3_inspect.py hxv4 ./data.xp3 --samples 10 `
   --drip-program ./data/manager_ready.drip_program.json
 ```
 
@@ -143,7 +143,7 @@ python src/xp3_inspect.py hxv4 ./data.xp3 --samples 10 `
 
 ```powershell
 # 提取 data.xp3 中的 startup.tjs
-python src/xp3_inspect.py extract ./data.xp3 startup.tjs ./startup.tjs `
+python src/common/xp3_inspect.py extract ./data.xp3 startup.tjs ./startup.tjs `
   --filter recovered --drip-program ./data/manager_ready.drip_program.json
 ```
 
@@ -151,7 +151,7 @@ python src/xp3_inspect.py extract ./data.xp3 startup.tjs ./startup.tjs `
 
 ```powershell
 # 提取 bgm.xp3（93 个 OGG 音频文件）
-python src/xp3_inspect.py extract-all ./output/bgm ./bgm.xp3 `
+python src/common/xp3_inspect.py extract-all ./output/bgm ./bgm.xp3 `
   --filter recovered --drip-program ./data/manager_ready.drip_program.json
 ```
 
@@ -162,7 +162,7 @@ $outBase = "./output"
 $drip = "./data/manager_ready.drip_program.json"
 
 @("allage","bgimage","bgm","data","evimage","fgimage","scn","steam","video","voice") | ForEach-Object {
-  python src/xp3_inspect.py extract-all "$outBase\$_" "./$_.xp3" `
+  python src/common/xp3_inspect.py extract-all "$outBase\$_" "./$_.xp3" `
     --filter recovered --drip-program $drip
 }
 ```
@@ -221,7 +221,7 @@ Get-Content ./output/bgm/bgm/entry_00001_5001.bin -Encoding Byte -TotalCount 4 |
 提取 `scn.xp3` 后，可以使用 `tjs2_inspect.py` 检查其输出文件的格式：
 
 ```powershell
-python src/tjs2_inspect.py ./output/scn/scn/entry_00001_5001.bin
+python src/common/tjs2_inspect.py ./output/scn/scn/entry_00001_5001.bin
 ```
 
 如果输出是 TJS2100 字节码，可进一步解析其 constant pool 和 opcode。
@@ -231,7 +231,7 @@ python src/tjs2_inspect.py ./output/scn/scn/entry_00001_5001.bin
 如果 `scn.xp3` 已解析为 `.ks.json` 场景文件，可使用 `parse_dialogue.py` 提取对话：
 
 ```powershell
-python src/parse_dialogue.py ./scn_json_dir --format all --output-dir ./dialogues
+python src/common/parse_dialogue.py ./scn_json_dir --format all --output-dir ./dialogues
 ```
 
 ---
@@ -268,7 +268,7 @@ Get-ChildItem ./output/bgm/bgm/*.bin | ForEach-Object {
 ### Q4: 如何从新的 dump 重新生成 drip_program.json
 
 ```powershell
-python src/inspect_manager_dump.py ./new_dump.full.dmp `
+python src/dynamic_capture/inspect_manager_dump.py ./new_dump.full.dmp `
   --manager-slot-rva 0xAC9AC `
   --out-prefix ./new_manager_ready
 ```
@@ -279,16 +279,16 @@ python src/inspect_manager_dump.py ./new_dump.full.dmp `
 
 | 操作 | 命令 |
 |------|------|
-| 查看摘要 | `python src/xp3_inspect.py summary ./file.xp3` |
-| 查找文件 | `python src/xp3_inspect.py find "keyword" ./file.xp3` |
-| 查看映射表 | `python src/xp3_inspect.py hxv4 ./file.xp3 --drip-program drip.json` |
-| 导出 metadata JSON | `python src/xp3_inspect.py json ./file.xp3 output.json` |
-| 验证 filter | `python src/xp3_inspect.py verify ./file.xp3 --filter recovered --drip-program drip.json` |
-| 提取单文件 | `python src/xp3_inspect.py extract ./file.xp3 "name" out.bin --filter recovered --drip-program drip.json` |
-| 提取整包 | `python src/xp3_inspect.py extract-all ./outdir ./file.xp3 --filter recovered --drip-program drip.json` |
-| 导出 Drip Program | `python src/inspect_manager_dump.py dump.dmp --manager-slot-rva 0xAC9AC --out-prefix out` |
-| 分析 TJS 字节码 | `python src/tjs2_inspect.py ./file.bin` |
-| 解析对话文本 | `python src/parse_dialogue.py ./json_dir --format all` |
+| 查看摘要 | `python src/common/xp3_inspect.py summary ./file.xp3` |
+| 查找文件 | `python src/common/xp3_inspect.py find "keyword" ./file.xp3` |
+| 查看映射表 | `python src/common/xp3_inspect.py hxv4 ./file.xp3 --drip-program drip.json` |
+| 导出 metadata JSON | `python src/common/xp3_inspect.py json ./file.xp3 output.json` |
+| 验证 filter | `python src/common/xp3_inspect.py verify ./file.xp3 --filter recovered --drip-program drip.json` |
+| 提取单文件 | `python src/common/xp3_inspect.py extract ./file.xp3 "name" out.bin --filter recovered --drip-program drip.json` |
+| 提取整包 | `python src/common/xp3_inspect.py extract-all ./outdir ./file.xp3 --filter recovered --drip-program drip.json` |
+| 导出 Drip Program | `python src/dynamic_capture/inspect_manager_dump.py dump.dmp --manager-slot-rva 0xAC9AC --out-prefix out` |
+| 分析 TJS 字节码 | `python src/common/tjs2_inspect.py ./file.bin` |
+| 解析对话文本 | `python src/common/parse_dialogue.py ./json_dir --format all` |
 
 ---
 
@@ -298,14 +298,14 @@ python src/inspect_manager_dump.py ./new_dump.full.dmp `
 
 ```powershell
 # 1. 验证
-python src/xp3_inspect.py verify ./bgm.xp3 --filter recovered --drip-program ./data/manager_ready.drip_program.json
+python src/common/xp3_inspect.py verify ./bgm.xp3 --filter recovered --drip-program ./data/manager_ready.drip_program.json
 
 # 2. 提取
-python src/xp3_inspect.py extract-all ./output/bgm ./bgm.xp3 --filter recovered --drip-program ./data/manager_ready.drip_program.json
+python src/common/xp3_inspect.py extract-all ./output/bgm ./bgm.xp3 --filter recovered --drip-program ./data/manager_ready.drip_program.json
 
 # 3. 全部包
 $drip = "./data/manager_ready.drip_program.json"
 @("allage","bgimage","bgm","data","evimage","fgimage","scn","steam","video","voice") | ForEach-Object {
-  python src/xp3_inspect.py extract-all "./output/$_" "./$_.xp3" --filter recovered --drip-program $drip
+  python src/common/xp3_inspect.py extract-all "./output/$_" "./$_.xp3" --filter recovered --drip-program $drip
 }
 ```

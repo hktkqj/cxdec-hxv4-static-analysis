@@ -179,6 +179,8 @@ class DripProgram:
         holder_words: list[int],
         context_u32: list[int],
         lanes: list[list[tuple[int, int]]],
+        hxv4_key: bytes | None = None,
+        hxv4_nonces: dict[int, bytes] | None = None,
     ) -> None:
         if len(lanes) != 128:
             raise XP3Error(f"Drip program must contain 128 lanes, got {len(lanes)}")
@@ -187,6 +189,8 @@ class DripProgram:
         self.holder_words = tuple(_u32(value) for value in holder_words)
         self.context_u32 = tuple(_u32(value) for value in context_u32)
         self.lanes = tuple(tuple((_u32(param), op) for param, op in lane) for lane in lanes)
+        self.hxv4_key = hxv4_key
+        self.hxv4_nonces = hxv4_nonces or {}
 
     @classmethod
     def load(cls, path: Path) -> "DripProgram":
@@ -211,6 +215,13 @@ class DripProgram:
             holder_words=[int(value) for value in payload["holder_words"]],
             context_u32=[int(value) for value in payload["context_u32"]],
             lanes=lanes,
+            hxv4_key=bytes.fromhex(payload["hxv4_key"]) if payload.get("hxv4_key") else None,
+            hxv4_nonces={
+                0: bytes.fromhex(payload["hxv4_nonce0"]),
+                1: bytes.fromhex(payload["hxv4_nonce1"]),
+            }
+            if payload.get("hxv4_nonce0") and payload.get("hxv4_nonce1")
+            else None,
         )
 
     def _context_value(self, index: int) -> int:
@@ -563,7 +574,7 @@ def find_hxv4_descriptor(index: bytes) -> Hxv4Descriptor | None:
     return None
 
 
-def decrypt_hxv4_payload(payload: bytes, flags: int) -> bytes:
+def decrypt_hxv4_payload(payload: bytes, flags: int, drip_program: DripProgram | None = None) -> bytes:
     try:
         from Crypto.Cipher import ChaCha20_Poly1305
     except ImportError as exc:
@@ -574,8 +585,10 @@ def decrypt_hxv4_payload(payload: bytes, flags: int) -> bytes:
     if len(payload) < 21:
         raise XP3Error("truncated Hxv4 encrypted payload")
 
-    nonce = HXV4_NONCES[flags & 1]
-    cipher = ChaCha20_Poly1305.new(key=HXV4_KEY, nonce=nonce)
+    key = drip_program.hxv4_key if drip_program and drip_program.hxv4_key else HXV4_KEY
+    nonces = drip_program.hxv4_nonces if drip_program and drip_program.hxv4_nonces else HXV4_NONCES
+    nonce = nonces[flags & 1]
+    cipher = ChaCha20_Poly1305.new(key=key, nonce=nonce)
     return cipher.decrypt_and_verify(payload[16:], payload[:16])
 
 
@@ -642,7 +655,12 @@ class TJSBinaryReader:
         raise XP3Error(f"unsupported TJS binary tag {signed_tag} at 0x{self.pos - 1:x}")
 
 
-def parse_hxv4_table(blob: bytes, index: bytes, entries: list[Entry]) -> tuple[Hxv4Descriptor, list[Hxv4Record]]:
+def parse_hxv4_table(
+    blob: bytes,
+    index: bytes,
+    entries: list[Entry],
+    drip_program: DripProgram | None = None,
+) -> tuple[Hxv4Descriptor, list[Hxv4Record]]:
     descriptor = find_hxv4_descriptor(index)
     if descriptor is None:
         raise XP3Error("archive has no Hxv4 table")
@@ -650,7 +668,7 @@ def parse_hxv4_table(blob: bytes, index: bytes, entries: list[Entry]) -> tuple[H
     if descriptor.offset < 0 or end > len(blob):
         raise XP3Error("Hxv4 payload points outside archive")
 
-    decrypted = decrypt_hxv4_payload(blob[descriptor.offset:end], descriptor.flags)
+    decrypted = decrypt_hxv4_payload(blob[descriptor.offset:end], descriptor.flags, drip_program)
     if len(decrypted) < 4:
         raise XP3Error("truncated decrypted Hxv4 payload")
     uncompressed_size = struct.unpack_from("<I", decrypted, 0)[0]
@@ -716,7 +734,7 @@ def build_filter_state_map(
     *,
     force_open_flag: int | None = None,
 ) -> dict[int, FilterRuntimeState]:
-    descriptor, records = parse_hxv4_table(blob, index, entries)
+    descriptor, records = parse_hxv4_table(blob, index, entries, drip_program)
     states: dict[int, FilterRuntimeState] = {}
     for record in records:
         if record.archive_slot != 0 or record.xp3_entry_index is None:
@@ -1181,7 +1199,7 @@ def command_hxv4(args: argparse.Namespace) -> int:
     for path in args.paths:
         info, entries, blob = read_archive(path)
         _, _, _, index = load_index(blob)
-        descriptor, records = parse_hxv4_table(blob, index, entries)
+        descriptor, records = parse_hxv4_table(blob, index, entries, drip_program)
         total += len(records)
         record_payloads: list[dict[str, Any]] = []
         state_records: list[dict[str, Any]] = []

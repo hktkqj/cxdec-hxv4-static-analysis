@@ -58,7 +58,7 @@ XP3 Index
 
 ### 1.4 TJS Variant 格式
 
-解密后的数据为 **big-endian** TJS binary Variant，由 `TJSBinaryReader` 解析（[src/xp3_inspect.py:582](src/xp3_inspect.py#L582)）：
+解密后的数据为 **big-endian** TJS binary Variant，由 `TJSBinaryReader` 解析（[src/common/xp3_inspect.py:582](../../src/common/xp3_inspect.py#L582)）：
 
 | Tag | 类型 | 编码 |
 |-----|------|------|
@@ -153,7 +153,7 @@ DripValueImpl_get64_from_u32 (RVA 0x19070):
 
 ### 2.4 DripProgram 实现
 
-核心类 — [src/xp3_inspect.py:173](src/xp3_inspect.py#L173)：
+核心类 — [src/common/xp3_inspect.py:173](../../src/common/xp3_inspect.py#L173)：
 
 ```python
 class DripProgram:
@@ -238,7 +238,7 @@ Offset  Size  Field
 
 ### 4.2 四层 XOR 变换
 
-`FilterRuntimeState.apply(data, offset)` — [src/xp3_inspect.py:441](src/xp3_inspect.py#L441)
+`FilterRuntimeState.apply(data, offset)` — [src/common/xp3_inspect.py:441](../../src/common/xp3_inspect.py#L441)
 
 #### Layer 1: Bulk XOR
 
@@ -353,7 +353,7 @@ DripValueImpl:
 
 ### 5.3 状态导出
 
-通过 `inspect_manager_dump.py` 从运行时 full-memory minidump 导出（[src/inspect_manager_dump.py](src/inspect_manager_dump.py)）：
+通过 `inspect_manager_dump.py` 从运行时 full-memory minidump 导出（[src/dynamic_capture/inspect_manager_dump.py](../../src/dynamic_capture/inspect_manager_dump.py)）：
 
 ```
 minidump → 解析模块列表 → 找到随机 DLL

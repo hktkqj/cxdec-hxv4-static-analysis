@@ -1,0 +1,18 @@
+{
+  "exe": "F:\\SteamLibrary\\steamapps\\common\\sanoba witch\\SabbatOfTheWitch.exe",
+  "salt_source": "F:\\SteamLibrary\\steamapps\\common\\sanoba witch\\SabbatOfTheWitch.exe:RVA 0x2e4a00",
+  "startup_key": "9kpzeqme93usra66re54h69ymi",
+  "bootstrap_url": "bres://./xuf2b4we2c5y8mi44vwhm6tqee/bootstrap",
+  "bootstrap_key": "xuf2b4we2c5y8mi44vwhm6tqee",
+  "bootstrap_prefix": "Sabbat_of_the_Witch (C)YUZUSOFT/JUNOS INC. All Rights Reserved.",
+  "warning": "Warning! Extracting this game data may infringe on author's rights.",
+  "final_bootstrap": "Sabbat_of_the_Witch (C)YUZUSOFT/JUNOS INC. All Rights Reserved.Warning! Extracting this game data may infringe on author's rights.",
+  "archive_unique_key": "{NENeMEGURuTSUMUGiTOUKoWAKANa}",
+  "outputs": {
+    "work_dir": "F:\\SteamLibrary\\steamapps\\common\\sanobawitchi_xp3analysis\\data\\static_recover",
+    "startup_dec": "F:\\SteamLibrary\\steamapps\\common\\sanobawitchi_xp3analysis\\data\\static_recover\\STARTUP.TJS.dec",
+    "bootstrap_dec": "F:\\SteamLibrary\\steamapps\\common\\sanobawitchi_xp3analysis\\data\\static_recover\\BOOTSTRAP.dec",
+    "dll": "F:\\SteamLibrary\\steamapps\\common\\sanobawitchi_xp3analysis\\data\\static_recover\\Sabano.dll",
+    "drip_program": "F:\\SteamLibrary\\steamapps\\common\\sanobawitchi_xp3analysis\\data\\static_recover\\sanoba.static.drip_program.json"
+  }
+}

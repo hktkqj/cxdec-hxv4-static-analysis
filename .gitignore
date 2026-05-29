@@ -1,0 +1,4 @@
+*.xp3
+**/__pycache__/
+tools/FilterManagerDerive/bin
+tools/FilterManagerDerive/obj

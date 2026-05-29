@@ -46,7 +46,7 @@ Offset  Size  Field
 0x20    8     真实 index_offset (uint64, little-endian)  ← 游戏自定义
 ```
 
-**检测逻辑**（[src/xp3_inspect.py:501](src/xp3_inspect.py#L501)）：
+**检测逻辑**（[src/common/xp3_inspect.py:501](../../src/common/xp3_inspect.py#L501)）：
 
 ```python
 def resolve_index_offset(blob: bytes) -> int:
@@ -200,7 +200,7 @@ bgm.xp3:   Ｖ, Ｗ, Ｘ, ...
 
 ### 5.2 输出文件命名策略
 
-提取时使用稳定编号命名（[src/xp3_inspect.py:931](src/xp3_inspect.py#L931)）：
+提取时使用稳定编号命名（[src/common/xp3_inspect.py:931](../../src/common/xp3_inspect.py#L931)）：
 
 ```
 entry_<物理index>_<前几个Unicode codepoint>.bin

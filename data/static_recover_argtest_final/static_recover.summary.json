@@ -1,0 +1,18 @@
+{
+  "exe": "F:\\SteamLibrary\\steamapps\\common\\sanoba witch\\SabbatOfTheWitch.exe",
+  "salt_source": "F:\\SteamLibrary\\steamapps\\common\\sanoba witch\\SabbatOfTheWitch.exe:file offset 0x2e3200",
+  "startup_key": "9kpzeqme93usra66re54h69ymi",
+  "bootstrap_url": "bres://./xuf2b4we2c5y8mi44vwhm6tqee/bootstrap",
+  "bootstrap_key": "xuf2b4we2c5y8mi44vwhm6tqee",
+  "bootstrap_prefix": "Sabbat_of_the_Witch (C)YUZUSOFT/JUNOS INC. All Rights Reserved.",
+  "warning": "Warning! Extracting this game data may infringe on author's rights.",
+  "final_bootstrap": "Sabbat_of_the_Witch (C)YUZUSOFT/JUNOS INC. All Rights Reserved.Warning! Extracting this game data may infringe on author's rights.",
+  "archive_unique_key": "{NENeMEGURuTSUMUGiTOUKoWAKANa}",
+  "outputs": {
+    "work_dir": "data\\static_recover_argtest_final",
+    "startup_dec": "data\\static_recover_argtest_final\\STARTUP.TJS.dec",
+    "bootstrap_dec": "data\\static_recover_argtest_final\\BOOTSTRAP.dec",
+    "dll": "data\\static_recover_argtest_final\\1ae7153ed25d.dll",
+    "drip_program": "data\\static_recover_argtest_final\\sanoba.static.drip_program.json"
+  }
+}
