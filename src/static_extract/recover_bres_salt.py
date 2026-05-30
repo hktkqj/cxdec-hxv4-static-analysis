@@ -11,22 +11,16 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from common.decrypt_bres_resource import decrypt_bres
-from static_extract.static_xp3_recover import (
+from common.pe_image import PeImage, find_resource
+from static_extract.bres_bootstrap import (
     DEFAULT_SALT_RVA,
     DEFAULT_STARTUP_RESOURCE,
     DEFAULT_TEXT_RESOURCE,
-    PeImage,
+    SALT_SIZE,
     decode_bres_root,
-    find_resource,
+    parse_int,
     parse_resource_ref,
 )
-
-
-SALT_SIZE = 0x2000
-
-
-def parse_int(value: str) -> int:
-    return int(value, 0)
 
 
 def verify_salt(salt: bytes, startup_cipher: bytes, startup_key: str) -> bool:

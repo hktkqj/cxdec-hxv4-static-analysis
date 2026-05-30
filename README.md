@@ -1,15 +1,15 @@
 # bres/BOOTSTRAP/Hxv4 XP3 资源静态提取分析
 
-本仓库最初记录 **Sabbat of the Witch for Steam / Sanoba Witch** 的 XP3 资源保护分析与提取工具；当前静态脚本已整理为面向同一类 bres/BOOTSTRAP/Hxv4 加密的恢复流程。
+本仓库存储 **Sabbat of the Witch for Steam** 以及使用 *类似加密* 的 XP3 资源保护分析文档与提取工具；当前静态脚本已整理为面向同一类 bres/BOOTSTRAP/Hxv4 加密的恢复流程。
 
 当前项目保留两条路线：
 
 | 路线 | 状态 | 用途 |
-|------|------|------|
+| ------ | ------ | ------ |
 | 纯静态分析与提取 | 当前推荐 | 不启动游戏、不附加调试器，直接从原始 EXE 和 XP3 文件恢复解密状态 |
 | 动态 dump / 运行时抓取 | 历史流程与交叉验证 | 在静态流程未打通前，通过运行时 dump 或断点抓参取得 FilterManager 状态 |
 
-核心结论：满足相同结构的样本可以走纯静态流程得到可用的 `drip_program.json`，不再需要运行时 dump。该流程已用于 Sanoba Witch 和 CafeStella 静态适配；不同游戏通常只需要确认 EXE 路径、salt 位置、DLL 配置表 RVA 和小范围 XP3 验证结果。
+满足相同加密密钥（或者说同一款游戏）的样本可以走纯静态流程得到可用的 `drip_program.json`，不再需要运行时 dump。该流程已用于 Sanoba Witch 和 CafeStella 静态适配；不同游戏通常只需要确认 EXE 路径、salt 位置、DLL 配置表 RVA 和小范围 XP3 验证结果。
 
 ## 纯静态分析与提取
 
@@ -74,7 +74,7 @@ python src\common\xp3_inspect.py verify `
 - [XP3 容器结构解析](docs/core/XP3Extract.md)
 - [Hxv4 / DripValue / FilterRuntimeState 分析](docs/core/Hxv4Ripped.md)
 
-## 动态 Dump / 运行时抓取
+## 动态 Dump / 运行时抓取 [Deprecated]
 
 动态流程是早期路线，用于在最终 bootstrap 字符串尚未静态确认时，从运行时对象中获得正确状态。
 
@@ -94,7 +94,6 @@ src/dynamic_capture/capture_bootstrap_args.py
 src/dynamic_capture/watch_random_plugin_dump.py
 src/dynamic_capture/inspect_manager_dump.py
 src/dynamic_capture/minidump_process.py
-src/dynamic_capture/build_complete_drip.py
 ```
 
 详细文档：
@@ -110,24 +109,23 @@ src/dynamic_capture/build_complete_drip.py
 src/
 ├── static_extract/                 # 纯静态提取闭环
 │   ├── static_xp3_recover.py       # 静态恢复 bres 资源、DLL 和 drip_program.json
+│   ├── bres_bootstrap.py           # bres/BOOTSTRAP 派生共用逻辑
 │   └── recover_bres_salt.py        # 从原始 EXE 提取并校验 bres salt
 │
 ├── dynamic_capture/                # 动态 dump / 运行时抓取
 │   ├── capture_bootstrap_args.py   # 抓取 System.bootStrap 参数
 │   ├── watch_random_plugin_dump.py # 监控随机 DLL 并创建 dump
 │   ├── inspect_manager_dump.py     # 从 dump 导出 FilterManager 状态
-│   ├── minidump_process.py         # 创建 full-memory minidump
-│   └── build_complete_drip.py      # 合并 live dump context 与 Hxv4 参数
+│   ├── filter_manager_dump.py      # FilterManager/Drip 状态导出逻辑
+│   ├── minidump_reader.py          # full-memory minidump 读取
+│   └── minidump_process.py         # 创建 full-memory minidump
 │
 └── common/                         # 两条路线共用代码
+    ├── pe_image.py                 # PE section/resource 读取
     ├── xp3_inspect.py              # XP3 验证 / 提取 / Hxv4 解析主入口
     ├── decrypt_bres_resource.py    # bres:// SHA3-384 + ChaCha8 解密
     ├── tjs2_inspect.py             # TJS2100 字节码检查
-    ├── parse_dialogue.py           # KAG 对话解析
-    ├── read_dll_config.py          # DLL 配置表读取
-    ├── compare_drip.py             # drip_program 对比
-    ├── disasm_bootstrap.py         # BOOTSTRAP DLL 辅助反汇编
-    └── ida_tvp_xp3_labels.py       # IDA 标签辅助
+    └── parse_dialogue.py           # KAG 对话解析
 ```
 
 ## 文档结构
