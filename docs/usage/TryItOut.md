@@ -1,6 +1,6 @@
-# 复现操作文档 — 从零开始提取 Sanoba Witch XP3 资源
+# 复现操作文档 — 从零开始提取 XP3 资源
 
-本文档提供完整的复现操作指南，从环境搭建到成功提取全部资源。
+本文档提供完整的复现操作指南，从环境搭建到成功提取资源。当前推荐优先使用静态流程：不启动游戏、不附加 debugger，直接从目标 EXE 的 PE Resources、bres salt 和 BOOTSTRAP DLL 派生 `drip_program.json`。旧的运行时 dump 流程保留为备选。
 
 ---
 
@@ -21,13 +21,13 @@ pip install pycryptodome
 
 | 文件 | 位置 | 说明 |
 |------|------|------|
-| `xp3_inspect.py` | `src/` | 主提取脚本 |
-| `inspect_manager_dump.py` | `src/` | Dump 状态导出脚本 |
-| `manager_ready.drip_program.json` | `data/` | DripValue VM 核心状态（离线提取必需） |
+| `static_xp3_recover.py` | `src/static_extract/` | 静态恢复 bres 资源、BOOTSTRAP DLL 和 `drip_program.json` |
+| `xp3_inspect.py` | `src/common/` | XP3 摘要、验证、Hxv4 调试和提取脚本 |
+| `FilterManagerDerive` | `tools/` | x86 dotnet 派生工具 |
 
 ### 游戏文件（已购买安装）
 
-游戏目录应包含以下 `.xp3` 文件：
+游戏目录应包含主程序 EXE 和若干 `.xp3` 文件。例如 Sanoba Witch：
 
 ```
 allage.xp3   bgimage.xp3   bgm.xp3    data.xp3
@@ -37,11 +37,149 @@ video.xp3    voice.xp3
 
 ---
 
-## 步骤 A：从运行时 Dump 导出 Drip Program（仅需一次）
+## 步骤 A：静态生成 Drip Program
 
-> **注意**：如果已有 `data/manager_ready.drip_program.json`，可跳过此步骤直接进入步骤 B。
+### A.1 静态探测
 
-### A.1 捕获运行时 Dump
+先用 `--skip-derive --debug` 确认目标游戏是否沿用当前静态链路。所有中间文件建议写到目标游戏目录的 `temp` 下：
+
+```powershell
+$game = "F:\SteamLibrary\steamapps\common\CafeStella"
+
+python src\static_extract\static_xp3_recover.py `
+  --exe "$game\CafeStella.exe" `
+  --work-dir "$game\temp\static_recover_probe" `
+  --skip-derive `
+  --debug
+```
+
+成功时应看到：
+
+```text
+[debug] STARTUP.TJS decrypted bytes=...
+[debug] BOOTSTRAP decrypted bytes=... dll_bytes=...
+[debug] DLL config labels=PARAMS,PUBKEY,UNIQUE,WARNING
+archive_unique_key: ...
+```
+
+CafeStella 已确认值：
+
+```text
+salt_source        = CafeStella.exe:RVA 0x2e4a00
+bootstrap_prefix   = Cafe Stella and the Reapers Butterflies (C)YUZUSOFT/JUNOS INC. All Rights Reserved.
+archive_unique_key = {Kanna+Natsume+Nozomi+Mei+Suzune}
+```
+
+如果 `STARTUP.TJS` 无法解密为 `TJS2100\0`，优先调整 `--salt-rva`、`--salt-file-offset` 或 `--salt-file`。如果 DLL 配置表找不到 `UNIQUE` / `WARNING`，优先调整 `--table-rva`。
+
+### A.2 生成 drip program
+
+```powershell
+python src\static_extract\static_xp3_recover.py `
+  --exe "$game\CafeStella.exe" `
+  --work-dir "$game\temp\static_recover" `
+  --debug
+```
+
+输出文件：
+
+```text
+$game\temp\static_recover\static_recover.summary.json
+$game\temp\static_recover\sanoba.static.drip_program.json
+```
+
+`sanoba.static.drip_program.json` 是历史文件名；用于哪个游戏取决于它是从哪个 EXE/DLL 派生出来的。
+
+---
+
+## 步骤 B：验证 Filter 正确性
+
+验证时先限制条目数，避免对大型包或整个目录做长时间全量验证：
+
+```powershell
+$drip = "$game\temp\static_recover\sanoba.static.drip_program.json"
+
+python src\common\xp3_inspect.py verify `
+  "$game\main.xp3" "$game\scn.xp3" "$game\data.xp3" `
+  --filter recovered `
+  --drip-program $drip `
+  --max-entries 20 `
+  --verbose
+```
+
+预期输出：
+
+```text
+main.xp3: checked=20 failed=0 unresolved_filter=0 limited_to=20
+scn.xp3: checked=20 failed=0 unresolved_filter=0 limited_to=20
+data.xp3: checked=20 failed=0 unresolved_filter=0 limited_to=20
+```
+
+也可以在静态恢复脚本中透传有限验证：
+
+```powershell
+python src\static_extract\static_xp3_recover.py `
+  --exe "$game\CafeStella.exe" `
+  --work-dir "$game\temp\static_recover" `
+  --xp3 "$game\main.xp3" "$game\scn.xp3" `
+  --verify `
+  --verify-max-entries 20 `
+  --debug
+```
+
+如果只验证单个小包，也可以不传 `--max-entries`。不要把整个游戏目录作为初次 verify 目标。
+
+---
+
+## 步骤 C：离线提取
+
+### C.1 查看 XP3 摘要
+
+```powershell
+python src\common\xp3_inspect.py summary "$game\data.xp3" --samples 5
+```
+
+### C.2 查看 Hxv4 映射表和 filter state
+
+```powershell
+python src\common\xp3_inspect.py hxv4 "$game\main.xp3" --samples 5 `
+  --drip-program $drip `
+  --output "$game\temp\main.hxv4.json" `
+  --states-output "$game\temp\main.filter_states.json"
+```
+
+### C.3 提取单个文件
+
+如果 XP3 中存在可见文件名，可以按名称提取：
+
+```powershell
+python src\common\xp3_inspect.py extract "$game\data.xp3" startup.tjs "$game\temp\startup.tjs" `
+  --filter recovered --drip-program $drip
+```
+
+### C.4 提取整个包
+
+```powershell
+python src\common\xp3_inspect.py extract-all `
+  "$game\temp\evimage_extract" `
+  "$game\evimage.xp3" `
+  --filter recovered `
+  --drip-program $drip
+```
+
+CafeStella `evimage.xp3` 已确认结果：
+
+```text
+processed=528 written=528 unresolved_filter=0 failed=0
+```
+
+每个提取目录下包含 `manifest.jsonl`，记录每条 entry 的状态和 Adler32 校验结果。
+
+---
+
+## 步骤 D：运行时 Dump 备选流程
+
+> 仅当静态流程无法定位 salt、BOOTSTRAP DLL 或派生逻辑时使用。
 
 使用 `watch_random_plugin_dump.py` 监控游戏进程，在随机 DLL 的 FilterManager 就绪时自动 dump：
 
@@ -53,29 +191,7 @@ python src/dynamic_capture/watch_random_plugin_dump.py `
   --output ./manager_ready.full.dmp
 ```
 
-参数说明：
-- `--attach-name`：附加到已运行的游戏进程
-- `--manager-slot-rva 0xAC9AC`：随机 DLL 中 `g_FilterManager` 的 RVA
-- `--deref-manager0`：要求 `manager[0]` wrapper 非空，确保 FilterManager 已初始化
-- `--settle-ms`：等待时间（默认 250ms），确保状态稳定
-
-### A.2 验证 Dump 有效性
-
-```powershell
-python src/dynamic_capture/inspect_manager_dump.py ./manager_ready.full.dmp `
-  --manager-slot-rva 0xAC9AC
-```
-
-成功时应看到：
-
-```
-random plugin: base=0x711D0000 ...
-g_FilterManager slot 0x7127C9AC -> 0x06511F08 (4b048db14c27.dll+0xAC9AC)
-manager[0] wrapper -> 0x0319B5C8 (mapped)
-drip impl          -> 0x06534FC8 (mapped)
-```
-
-### A.3 导出 Drip Program
+导出 Drip Program：
 
 ```powershell
 python src/dynamic_capture/inspect_manager_dump.py ./manager_ready.full.dmp `
@@ -83,150 +199,50 @@ python src/dynamic_capture/inspect_manager_dump.py ./manager_ready.full.dmp `
   --out-prefix ./manager_ready
 ```
 
-成功时应看到：
-
-```
-wrote manager_ready.drip_program.json (128 lanes, 3106 context dwords)
-```
-
-导出的文件包括：
-- `manager_ready.drip_program.json` — **离线提取核心依赖**
-- `manager_ready.filter_manager.bin` — FilterManager 二进制 dump
-- `manager_ready.drip_impl.bin` — DripValueImpl 二进制 dump
+导出的 `manager_ready.drip_program.json` 可替代静态流程生成的 `drip_program.json` 用于验证和提取。
 
 ---
 
-## 步骤 B：验证 Filter 正确性
+## 步骤 E：提取结果分析
 
-在提取前，先验证 recovered filter 是否与运行时一致：
-
-```powershell
-python src/common/xp3_inspect.py verify ./bgm.xp3 `
-  --filter recovered `
-  --drip-program ./data/manager_ready.drip_program.json
-```
-
-预期输出：
-
-```
-bgm.xp3: checked=93 failed=0 unresolved_filter=0
-```
-
-可以一次性验证全部 XP3：
+### E.1 查看 manifest 统计
 
 ```powershell
-@("allage","bgimage","bgm","data","evimage","fgimage","scn","steam","video","voice") | ForEach-Object {
-  python src/common/xp3_inspect.py verify "./$_.xp3" `
-    --filter recovered `
-    --drip-program ./data/manager_ready.drip_program.json
-}
-```
-
----
-
-## 步骤 C：离线提取
-
-### C.1 查看 XP3 摘要
-
-```powershell
-python src/common/xp3_inspect.py summary ./data.xp3 --samples 5
-```
-
-### C.2 查看 Hxv4 映射表
-
-```powershell
-python src/common/xp3_inspect.py hxv4 ./data.xp3 --samples 10 `
-  --drip-program ./data/manager_ready.drip_program.json
-```
-
-### C.3 提取单个文件
-
-```powershell
-# 提取 data.xp3 中的 startup.tjs
-python src/common/xp3_inspect.py extract ./data.xp3 startup.tjs ./startup.tjs `
-  --filter recovered --drip-program ./data/manager_ready.drip_program.json
-```
-
-### C.4 提取整个包
-
-```powershell
-# 提取 bgm.xp3（93 个 OGG 音频文件）
-python src/common/xp3_inspect.py extract-all ./output/bgm ./bgm.xp3 `
-  --filter recovered --drip-program ./data/manager_ready.drip_program.json
-```
-
-### C.5 一次性提取全部 10 个包
-
-```powershell
-$outBase = "./output"
-$drip = "./data/manager_ready.drip_program.json"
-
-@("allage","bgimage","bgm","data","evimage","fgimage","scn","steam","video","voice") | ForEach-Object {
-  python src/common/xp3_inspect.py extract-all "$outBase\$_" "./$_.xp3" `
-    --filter recovered --drip-program $drip
-}
-```
-
-提取完成后，每个包对应一个输出子目录：
-
-```
-output/
-├── allage/allage/      (91 files)
-├── bgimage/bgimage/    (108 files)
-├── bgm/bgm/            (93 OGG files)
-├── data/data/          (4,087 files)
-├── evimage/evimage/    (319 files)
-├── fgimage/fgimage/    (1,554 files)
-├── scn/scn/            (26 files)
-├── steam/steam/        (3 files)
-├── video/video/        (12 files)
-└── voice/voice/        (28,988 files)
-```
-
-每个目录下包含 `manifest.jsonl`，记录了每条 entry 的提取状态和 Adler32 校验结果。
-
----
-
-## 步骤 D：提取结果分析
-
-### D.1 查看提取结果
-
-```powershell
-# 查看 manifest 统计
-Get-Content ./output/bgm/bgm/manifest.jsonl | ForEach-Object {
+Get-Content "$game\temp\evimage_extract\manifest.jsonl" | ForEach-Object {
   ($_ | ConvertFrom-Json).status
 } | Group-Object | Select-Object Name, Count
 ```
 
-### D.2 文件类型识别
+### E.2 文件类型识别
 
-对提取目录做 magic 扫描以确定文件真实格式：
+对提取目录做 magic 扫描以确定文件真实格式。很多受保护条目没有原始文件名，输出会使用 `entry_*.bin`：
 
 ```powershell
-# 示例：检查 bgm 输出的文件头
-Get-Content ./output/bgm/bgm/entry_00001_5001.bin -Encoding Byte -TotalCount 4 |
+Get-Content "$game\temp\evimage_extract\evimage\entry_00001_5001.bin" -Encoding Byte -TotalCount 4 |
   ForEach-Object { "{0:X2}" -f $_ }
-# OggS → OGG Vorbis 音频
-
-# 已知 magic 对应关系：
-# OggS   → .ogg (OGG Vorbis)
-# 89 50 4E 47 → .png
-# FF D8 FF → .jpg
-# TLG0 → .tlg
-# TJS2100 → .tjs
 ```
 
-### D.3 解析场景脚本（scn.xp3）
+常见 magic：
+
+```text
+OggS        -> .ogg
+89 50 4E 47 -> .png
+FF D8 FF    -> .jpg
+TLG0        -> .tlg
+TJS2100     -> .tjs
+```
+
+### E.3 解析场景脚本
 
 提取 `scn.xp3` 后，可以使用 `tjs2_inspect.py` 检查其输出文件的格式：
 
 ```powershell
-python src/common/tjs2_inspect.py ./output/scn/scn/entry_00001_5001.bin
+python src/common/tjs2_inspect.py "$game\temp\scn_extract\scn\entry_00001_5001.bin"
 ```
 
 如果输出是 TJS2100 字节码，可进一步解析其 constant pool 和 opcode。
 
-### D.4 解析对话文本
+### E.4 解析对话文本
 
 如果 `scn.xp3` 已解析为 `.ks.json` 场景文件，可使用 `parse_dialogue.py` 提取对话：
 
@@ -250,8 +266,21 @@ pip install pycryptodome
 1. `open_flag` 是否正确（应使用 `Hxv4 descriptor.flags & 1`，而非 `record.filter_flag & 1`）
 2. 有 `startup.tjs` 的包 entry 映射是否有 `+1` 偏移
 3. `startup.tjs` 本身可能 raw Adler 已正确，不应强制套 filter
+4. 当前 `drip_program.json` 是否由同一游戏的 EXE/DLL 派生，不要混用其他游戏的 JSON
 
-### Q3: 提取的 bgm 文件无法播放
+### Q3: 静态探测失败时是否需要 IDA
+
+如果 `--debug --skip-derive` 无法走到 `archive_unique_key`，再考虑 IDA。优先定位：
+
+| 现象 | 定位目标 |
+|------|----------|
+| `STARTUP.TJS did not decrypt to TJS2100` | salt RVA / 文件偏移 |
+| BOOTSTRAP 无法 zlib 解压 | BOOTSTRAP key 或 payload header |
+| 解压结果不是 PE DLL | BOOTSTRAP payload 布局 |
+| 配置表无 `UNIQUE` / `WARNING` | `--table-rva` |
+| `FilterManagerDerive` 失败 | DLL 派生函数 RVA / 调用约定 |
+
+### Q4: 提取的 bgm 文件无法播放
 
 提取后文件没有扩展名，需要根据 magic bytes 重命名：
 
@@ -265,7 +294,7 @@ Get-ChildItem ./output/bgm/bgm/*.bin | ForEach-Object {
 }
 ```
 
-### Q4: 如何从新的 dump 重新生成 drip_program.json
+### Q5: 如何从新的 dump 重新生成 drip_program.json
 
 ```powershell
 python src/dynamic_capture/inspect_manager_dump.py ./new_dump.full.dmp `
@@ -284,8 +313,12 @@ python src/dynamic_capture/inspect_manager_dump.py ./new_dump.full.dmp `
 | 查看映射表 | `python src/common/xp3_inspect.py hxv4 ./file.xp3 --drip-program drip.json` |
 | 导出 metadata JSON | `python src/common/xp3_inspect.py json ./file.xp3 output.json` |
 | 验证 filter | `python src/common/xp3_inspect.py verify ./file.xp3 --filter recovered --drip-program drip.json` |
+| 有限验证 filter | `python src/common/xp3_inspect.py verify ./file.xp3 --filter recovered --drip-program drip.json --max-entries 20` |
 | 提取单文件 | `python src/common/xp3_inspect.py extract ./file.xp3 "name" out.bin --filter recovered --drip-program drip.json` |
 | 提取整包 | `python src/common/xp3_inspect.py extract-all ./outdir ./file.xp3 --filter recovered --drip-program drip.json` |
+| 静态生成 Drip Program | `python src/static_extract/static_xp3_recover.py --exe game.exe --work-dir game\temp\static_recover --debug` |
+| 静态探测 | `python src/static_extract/static_xp3_recover.py --exe game.exe --work-dir game\temp\probe --skip-derive --debug` |
+| 静态派生并有限验证 | `python src/static_extract/static_xp3_recover.py --exe game.exe --work-dir game\temp\static_recover --xp3 main.xp3 --verify --verify-max-entries 20 --debug` |
 | 导出 Drip Program | `python src/dynamic_capture/inspect_manager_dump.py dump.dmp --manager-slot-rva 0xAC9AC --out-prefix out` |
 | 分析 TJS 字节码 | `python src/common/tjs2_inspect.py ./file.bin` |
 | 解析对话文本 | `python src/common/parse_dialogue.py ./json_dir --format all` |
@@ -294,18 +327,18 @@ python src/dynamic_capture/inspect_manager_dump.py ./new_dump.full.dmp `
 
 ## 最小复现流程（TL;DR）
 
-如果你已经有 `data/manager_ready.drip_program.json`，只需要：
+静态路径最小流程：
 
 ```powershell
-# 1. 验证
-python src/common/xp3_inspect.py verify ./bgm.xp3 --filter recovered --drip-program ./data/manager_ready.drip_program.json
+$game = "F:\SteamLibrary\steamapps\common\CafeStella"
+$drip = "$game\temp\static_recover\sanoba.static.drip_program.json"
 
-# 2. 提取
-python src/common/xp3_inspect.py extract-all ./output/bgm ./bgm.xp3 --filter recovered --drip-program ./data/manager_ready.drip_program.json
+# 1. 生成 drip program
+python src/static_extract/static_xp3_recover.py --exe "$game\CafeStella.exe" --work-dir "$game\temp\static_recover" --debug
 
-# 3. 全部包
-$drip = "./data/manager_ready.drip_program.json"
-@("allage","bgimage","bgm","data","evimage","fgimage","scn","steam","video","voice") | ForEach-Object {
-  python src/common/xp3_inspect.py extract-all "./output/$_" "./$_.xp3" --filter recovered --drip-program $drip
-}
+# 2. 有限验证
+python src/common/xp3_inspect.py verify "$game\main.xp3" --filter recovered --drip-program $drip --max-entries 20
+
+# 3. 提取目标包
+python src/common/xp3_inspect.py extract-all "$game\temp\evimage_extract" "$game\evimage.xp3" --filter recovered --drip-program $drip
 ```

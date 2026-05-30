@@ -4,7 +4,7 @@
 
 ## 结论
 
-Sanoba Witch 当前样本可以通过静态文件直接得到可用的 XP3 解密状态。
+Sanoba Witch 当前样本可以通过静态文件直接得到可用的 XP3 解密状态。同一静态流程也已验证可迁移到 CafeStella：只要 EXE 资源布局、bres salt、BOOTSTRAP DLL 配置表和 DLL 派生入口保持一致，就不需要运行时 dump。
 
 ```powershell
 python src\static_extract\static_xp3_recover.py
@@ -40,9 +40,37 @@ python src\static_extract\static_xp3_recover.py `
 scn.xp3: checked=26 failed=0 unresolved_filter=0
 ```
 
+CafeStella 适配时使用目标目录下的 `temp` 保存中间文件，并只做小范围验证：
+
+```powershell
+$game = "F:\SteamLibrary\steamapps\common\CafeStella"
+
+python src\static_extract\static_xp3_recover.py `
+  --exe "$game\CafeStella.exe" `
+  --work-dir "$game\temp\static_recover" `
+  --debug
+
+python src\common\xp3_inspect.py verify `
+  "$game\main.xp3" "$game\scn.xp3" "$game\data.xp3" `
+  --filter recovered `
+  --drip-program "$game\temp\static_recover\sanoba.static.drip_program.json" `
+  --max-entries 20 `
+  --verbose
+```
+
+已确认结果：
+
+```text
+main.xp3: checked=20 failed=0 unresolved_filter=0 limited_to=20
+scn.xp3: checked=20 failed=0 unresolved_filter=0 limited_to=20
+data.xp3: checked=20 failed=0 unresolved_filter=0 limited_to=20
+```
+
 ## 完成流程总结
 
 当前静态闭环已经整理到 `src/static_extract/static_xp3_recover.py` 中。它的目标是从原始游戏 EXE 和加密模块自身恢复完整 `drip_program.json`，不依赖运行时 dump、调试器附加或临时 DLL 抓取。
+
+不同游戏适配的操作清单见 [Cross-Game Static Flow Adaptation](Porting_Static_Flow.md)。该文档记录了 CafeStella 的已确认参数、有限验证策略、`--debug` / `--verify-max-entries` 用法，以及什么时候才需要转入 IDA。
 
 ### 1. 静态输入
 
@@ -464,6 +492,41 @@ sub_100157D0(manager + 8, archive_text_utf16le, byte_len, archive_seed)
 ```text
 {NENeMEGURuTSUMUGiTOUKoWAKANa}
 ```
+
+## 跨游戏适配参数
+
+当前静态脚本为不同游戏暴露以下关键参数：
+
+| 参数 | 说明 |
+|------|------|
+| `--exe` | 目标游戏 EXE，提供 PE Resources |
+| `--work-dir` | 输出目录；跨游戏分析时建议使用目标游戏目录下的 `temp` |
+| `--salt-file` | 直接指定 0x2000 字节 bres salt |
+| `--salt-source-exe` / `--runtime-exe` | 只用于 salt 提取的 PE 文件 |
+| `--salt-rva` | 从 salt source 的 PE RVA 读取 salt，默认 `0x2E4A00` |
+| `--salt-file-offset` | 从 salt source 的文件偏移读取 salt |
+| `--table-rva` | BOOTSTRAP DLL 配置表 RVA，默认 `0x80E38` |
+| `--skip-derive` | 只做资源解密和 DLL 解包，用于探测 |
+| `--debug` | 输出阶段级诊断信息 |
+| `--verify-max-entries` | 配合 `--verify` 做有限验证 |
+
+`xp3_inspect.py verify` 也支持有限验证：
+
+```powershell
+python src\common\xp3_inspect.py verify `
+  --filter recovered `
+  --drip-program path\to\sanoba.static.drip_program.json `
+  --max-entries 20 `
+  path\to\main.xp3
+```
+
+迁移到新游戏时，推荐顺序是：
+
+1. `--skip-derive --debug` 探测静态资源链路。
+2. 生成目标游戏自己的 `drip_program.json`。
+3. 对 `main.xp3`、`scn.xp3`、`data.xp3` 这类代表性包做 `--max-entries 20` 小范围验证。
+4. 验证通过后再提取目标包。
+5. 只有静态探测或小范围验证失败时，再用 IDA 定位新的 salt RVA、配置表 RVA 或 DLL 派生逻辑。
 
 ## salt 的边界
 

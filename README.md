@@ -9,7 +9,7 @@
 | 纯静态分析与提取 | 当前推荐 | 不启动游戏、不附加调试器，直接从原始 EXE 和 XP3 文件恢复解密状态 |
 | 动态 dump / 运行时抓取 | 历史流程与交叉验证 | 在静态流程未打通前，通过运行时 dump 或断点抓参取得 FilterManager 状态 |
 
-核心结论：Sanoba 当前样本已经可以走纯静态流程得到可用的 `drip_program.json`，不再需要运行时 dump。
+核心结论：Sanoba 当前样本已经可以走纯静态流程得到可用的 `drip_program.json`，不再需要运行时 dump。该流程也已用于 CafeStella 静态适配；不同游戏通常只需要确认 EXE 路径、salt 位置、DLL 配置表 RVA 和小范围 XP3 验证结果。
 
 ## 纯静态分析与提取
 
@@ -48,9 +48,28 @@ hxv4_nonce0 = d99230e02623f4a0c4f2857682b4de6dfefe820b57060e50
 hxv4_nonce1 = b96f89630850dd23a13810c7718ad003936d1d4a3ae00890
 ```
 
+适配其他游戏时，建议把所有中间产物写到目标游戏目录的 `temp` 下，并先做有限验证：
+
+```powershell
+$game = "F:\SteamLibrary\steamapps\common\CafeStella"
+
+python src\static_extract\static_xp3_recover.py `
+  --exe "$game\CafeStella.exe" `
+  --work-dir "$game\temp\static_recover" `
+  --debug
+
+python src\common\xp3_inspect.py verify `
+  "$game\main.xp3" "$game\scn.xp3" "$game\data.xp3" `
+  --filter recovered `
+  --drip-program "$game\temp\static_recover\sanoba.static.drip_program.json" `
+  --max-entries 20 `
+  --verbose
+```
+
 详细文档：
 
 - [纯静态 FilterManager 派生流程](docs/static/DeriveFilterManager_Static.md)
+- [不同游戏的静态流程适配](docs/static/Porting_Static_Flow.md)
 - [XP3 容器结构解析](docs/core/XP3Extract.md)
 - [Hxv4 / DripValue / FilterRuntimeState 分析](docs/core/Hxv4Ripped.md)
 
@@ -115,7 +134,8 @@ src/
 ```plain
 docs/
 ├── static/
-│   └── DeriveFilterManager_Static.md      # 当前推荐的纯静态闭环
+│   ├── DeriveFilterManager_Static.md      # 当前推荐的纯静态闭环
+│   └── Porting_Static_Flow.md             # 不同游戏的静态流程适配
 ├── live_dump/
 │   └── DeriveFilterManager_LiveDump.md    # 早期动态 dump 闭环
 ├── core/
@@ -165,6 +185,28 @@ python src\common\xp3_inspect.py verify `
   --filter recovered `
   --drip-program data\static_recover\sanoba.static.drip_program.json `
   "F:\SteamLibrary\steamapps\common\sanoba witch\scn.xp3"
+```
+
+有限验证 XP3：
+
+```powershell
+python src\common\xp3_inspect.py verify `
+  --filter recovered `
+  --drip-program data\static_recover\sanoba.static.drip_program.json `
+  --max-entries 20 `
+  "F:\SteamLibrary\steamapps\common\CafeStella\main.xp3"
+```
+
+静态恢复时透传有限验证：
+
+```powershell
+python src\static_extract\static_xp3_recover.py `
+  --exe "F:\SteamLibrary\steamapps\common\CafeStella\CafeStella.exe" `
+  --work-dir "F:\SteamLibrary\steamapps\common\CafeStella\temp\static_recover" `
+  --xp3 "F:\SteamLibrary\steamapps\common\CafeStella\main.xp3" `
+  --verify `
+  --verify-max-entries 20 `
+  --debug
 ```
 
 提取 XP3：
