@@ -11,7 +11,15 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from common.decrypt_bres_resource import decrypt_bres
-from static_extract.static_xp3_recover import DEFAULT_EXE, PeImage, decode_bres_root, find_resource
+from static_extract.static_xp3_recover import (
+    DEFAULT_SALT_RVA,
+    DEFAULT_STARTUP_RESOURCE,
+    DEFAULT_TEXT_RESOURCE,
+    PeImage,
+    decode_bres_root,
+    find_resource,
+    parse_resource_ref,
+)
 
 
 SALT_SIZE = 0x2000
@@ -75,11 +83,15 @@ def scan_file(
     return None
 
 
-def load_startup_probe(exe_path: Path) -> tuple[bytes, str]:
+def load_startup_probe(
+    exe_path: Path,
+    startup_resource: tuple[object, object],
+    text_resource: tuple[object, object],
+) -> tuple[bytes, str]:
     exe = PeImage(exe_path)
     resources = exe.resources()
-    startup_cipher = find_resource(resources, 10, "STARTUP.TJS")
-    startup_key = decode_bres_root(find_resource(resources, "TEXT", 127))
+    startup_cipher = find_resource(resources, *startup_resource)
+    startup_key = decode_bres_root(find_resource(resources, *text_resource))
     return startup_cipher, startup_key
 
 
@@ -94,20 +106,32 @@ def try_pe_rva(path: Path, rva: int) -> tuple[int, bytes] | None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Extract and verify the 8192-byte bres salt from an unpacked main image or dump."
+        description="Extract and verify the 8192-byte bres salt for this bres resource encryption family."
     )
-    parser.add_argument("--exe", type=Path, default=DEFAULT_EXE, help="packed game EXE used as STARTUP.TJS probe")
+    parser.add_argument("--exe", type=Path, required=True, help="target PE used as the STARTUP.TJS probe")
     parser.add_argument("--source", type=Path, action="append", help="unpacked image or memory dump to read")
-    parser.add_argument("--out", type=Path, default=Path("salt_F44A00.bin"))
-    parser.add_argument("--va", type=parse_int, default=0xF44A00, help="virtual address of unk_F44A00")
+    parser.add_argument("--out", type=Path, default=Path("bres_salt.bin"))
+    parser.add_argument("--va", type=parse_int, help="virtual address of the salt in a flat memory dump")
     parser.add_argument("--image-base", type=parse_int, help="image base for --va, for example 0xC60000")
     parser.add_argument("--rva", type=parse_int, help="read salt at flat RVA/file offset from source")
     parser.add_argument("--file-offset", type=parse_int, help="read salt at exact file offset from source")
     parser.add_argument(
         "--pe-rva",
         type=parse_int,
-        default=0x2E4A00,
-        help="map this PE RVA through source section headers; defaults to the Sanoba bres salt RVA",
+        default=DEFAULT_SALT_RVA,
+        help="map this PE RVA through source section headers; default matches known samples in this family",
+    )
+    parser.add_argument(
+        "--startup-resource",
+        type=parse_resource_ref,
+        default=DEFAULT_STARTUP_RESOURCE,
+        help="resource TYPE/NAME for encrypted STARTUP.TJS; default 10/STARTUP.TJS",
+    )
+    parser.add_argument(
+        "--text-resource",
+        type=parse_resource_ref,
+        default=DEFAULT_TEXT_RESOURCE,
+        help="resource TYPE/NAME containing the bres root URL; default TEXT/127",
     )
     parser.add_argument(
         "--scan",
@@ -117,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scan-alignment", type=parse_int, default=0x1000)
     args = parser.parse_args(argv)
 
-    startup_cipher, startup_key = load_startup_probe(args.exe)
+    startup_cipher, startup_key = load_startup_probe(args.exe, args.startup_resource, args.text_resource)
     sources = args.source or [args.exe]
 
     for source in sources:
@@ -136,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
                 if result is not None:
                     offset, salt = result
                     if verify_salt(salt, startup_cipher, startup_key):
+                        args.out.parent.mkdir(parents=True, exist_ok=True)
                         args.out.write_bytes(salt)
                         print(f"[+] recovered salt from {source} PE RVA 0x{args.pe_rva:x} / file offset 0x{offset:x}")
                         print(f"[+] wrote {args.out} sha256={hashlib.sha256(salt).hexdigest()}")
@@ -147,6 +172,7 @@ def main(argv: list[str] | None = None) -> int:
             if salt is None:
                 continue
             if verify_salt(salt, startup_cipher, startup_key):
+                args.out.parent.mkdir(parents=True, exist_ok=True)
                 args.out.write_bytes(salt)
                 print(f"[+] recovered salt from {source} {label} / file offset 0x{offset:x}")
                 print(f"[+] wrote {args.out} sha256={hashlib.sha256(salt).hexdigest()}")
@@ -157,6 +183,7 @@ def main(argv: list[str] | None = None) -> int:
             found = scan_file(source, startup_cipher, startup_key, alignment=args.scan_alignment)
             if found is not None:
                 offset, salt = found
+                args.out.parent.mkdir(parents=True, exist_ok=True)
                 args.out.write_bytes(salt)
                 print(f"[+] recovered salt from {source} scan offset 0x{offset:x}")
                 print(f"[+] wrote {args.out} sha256={hashlib.sha256(salt).hexdigest()}")

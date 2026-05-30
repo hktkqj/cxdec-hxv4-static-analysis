@@ -27,7 +27,7 @@ pip install pycryptodome
 
 ### 游戏文件（已购买安装）
 
-游戏目录应包含主程序 EXE 和若干 `.xp3` 文件。例如 Sanoba Witch：
+游戏目录应包含主程序 EXE 和若干 `.xp3` 文件。例如：
 
 ```
 allage.xp3   bgimage.xp3   bgm.xp3    data.xp3
@@ -41,7 +41,7 @@ video.xp3    voice.xp3
 
 ### A.1 静态探测
 
-先用 `--skip-derive --debug` 确认目标游戏是否沿用当前静态链路。所有中间文件建议写到目标游戏目录的 `temp` 下：
+先用 `--skip-derive --debug` 确认目标游戏是否属于当前 bres/BOOTSTRAP/Hxv4 加密链路。所有中间文件建议写到目标游戏目录的 `temp` 下：
 
 ```powershell
 $game = "F:\SteamLibrary\steamapps\common\CafeStella"
@@ -70,7 +70,7 @@ bootstrap_prefix   = Cafe Stella and the Reapers Butterflies (C)YUZUSOFT/JUNOS I
 archive_unique_key = {Kanna+Natsume+Nozomi+Mei+Suzune}
 ```
 
-如果 `STARTUP.TJS` 无法解密为 `TJS2100\0`，优先调整 `--salt-rva`、`--salt-file-offset` 或 `--salt-file`。如果 DLL 配置表找不到 `UNIQUE` / `WARNING`，优先调整 `--table-rva`。
+如果 `STARTUP.TJS` 无法解密为 `TJS2100\0`，优先调整 `--salt-rva`、`--salt-file-offset` 或 `--salt-file`。如果 BOOTSTRAP 已解密但无法 zlib 解压，检查 `--bootstrap-zlib-offset`。如果 DLL 配置表找不到 `UNIQUE` / `WARNING`，优先调整 `--table-rva`。
 
 ### A.2 生成 drip program
 
@@ -85,10 +85,10 @@ python src\static_extract\static_xp3_recover.py `
 
 ```text
 $game\temp\static_recover\static_recover.summary.json
-$game\temp\static_recover\sanoba.static.drip_program.json
+$game\temp\static_recover\drip_program.json
 ```
 
-`sanoba.static.drip_program.json` 是历史文件名；用于哪个游戏取决于它是从哪个 EXE/DLL 派生出来的。
+`drip_program.json` 必须和生成它的目标 EXE/DLL 配套使用，不要混用其他游戏或其他版本生成的 JSON。
 
 ---
 
@@ -97,7 +97,7 @@ $game\temp\static_recover\sanoba.static.drip_program.json
 验证时先限制条目数，避免对大型包或整个目录做长时间全量验证：
 
 ```powershell
-$drip = "$game\temp\static_recover\sanoba.static.drip_program.json"
+$drip = "$game\temp\static_recover\drip_program.json"
 
 python src\common\xp3_inspect.py verify `
   "$game\main.xp3" "$game\scn.xp3" "$game\data.xp3" `
@@ -268,17 +268,34 @@ pip install pycryptodome
 3. `startup.tjs` 本身可能 raw Adler 已正确，不应强制套 filter
 4. 当前 `drip_program.json` 是否由同一游戏的 EXE/DLL 派生，不要混用其他游戏的 JSON
 
-### Q3: 静态探测失败时是否需要 IDA
+### Q3: 静态探测失败时如何检查和汇报
 
-如果 `--debug --skip-derive` 无法走到 `archive_unique_key`，再考虑 IDA。优先定位：
+先保留 `--debug --skip-derive` 的完整输出，并检查 `static_recover.summary.json` 是否生成。如果没有走到 `archive_unique_key`，按现象优先定位：
 
 | 现象 | 定位目标 |
 |------|----------|
-| `STARTUP.TJS did not decrypt to TJS2100` | salt RVA / 文件偏移 |
-| BOOTSTRAP 无法 zlib 解压 | BOOTSTRAP key 或 payload header |
-| 解压结果不是 PE DLL | BOOTSTRAP payload 布局 |
+| `resource ... was not found` | `--startup-resource` / `--bootstrap-resource` / `--text-resource` 是否匹配目标 EXE 资源表 |
+| `STARTUP.TJS did not decrypt to TJS2100` | `--salt-rva` / `--salt-file-offset` / `--salt-file`，或 salt 长度不是 0x2000 |
+| BOOTSTRAP 无法 zlib 解压 | BOOTSTRAP key、`--bootstrap-zlib-offset` 或 payload 格式 |
+| 解压结果不是 PE DLL | BOOTSTRAP payload 布局或压缩偏移 |
 | 配置表无 `UNIQUE` / `WARNING` | `--table-rva` |
 | `FilterManagerDerive` 失败 | DLL 派生函数 RVA / 调用约定 |
+| `verify` 出现 Adler mismatch | `drip_program.json` 是否来自同一目标、Hxv4 映射、open flag 或 archive key update |
+
+汇报问题时请提供：
+
+```text
+目标游戏名 / 版本 / 商店来源:
+EXE 文件名和 SHA256:
+执行的完整命令:
+--debug 输出:
+static_recover.summary.json:
+失败的 XP3 名称:
+verify 输出或 manifest.jsonl 中的失败条目:
+已尝试的 --salt-rva / --salt-file-offset / --table-rva / --bootstrap-zlib-offset:
+```
+
+只有静态探测或小范围验证失败，并且上述信息指向偏移或派生逻辑变化时，才需要进入 IDA 定位新的 salt RVA、配置表 RVA 或 DLL 派生逻辑。
 
 ### Q4: 提取的 bgm 文件无法播放
 
@@ -331,7 +348,7 @@ python src/dynamic_capture/inspect_manager_dump.py ./new_dump.full.dmp `
 
 ```powershell
 $game = "F:\SteamLibrary\steamapps\common\CafeStella"
-$drip = "$game\temp\static_recover\sanoba.static.drip_program.json"
+$drip = "$game\temp\static_recover\drip_program.json"
 
 # 1. 生成 drip program
 python src/static_extract/static_xp3_recover.py --exe "$game\CafeStella.exe" --work-dir "$game\temp\static_recover" --debug

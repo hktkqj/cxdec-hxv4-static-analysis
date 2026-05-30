@@ -19,10 +19,14 @@ from common.decrypt_bres_resource import decrypt_bres
 from common.tjs2_inspect import parse_chunks, parse_data_chunk
 
 
-DEFAULT_EXE = Path(r"F:\SteamLibrary\steamapps\common\sanoba witch\SabbatOfTheWitch.exe")
 DEFAULT_SALT_RVA = 0x2E4A00
 DEFAULT_TABLE_RVA = 0x80E38
 DEFAULT_DOTNET_X86 = Path(r"C:\Program Files (x86)\dotnet\dotnet.exe")
+DEFAULT_STARTUP_RESOURCE = (10, "STARTUP.TJS")
+DEFAULT_BOOTSTRAP_RESOURCE = (10, "BOOTSTRAP")
+DEFAULT_TEXT_RESOURCE = ("TEXT", 127)
+DEFAULT_PLUGIN_RESOURCE = (10, "PLUGIN")
+DEFAULT_BOOTSTRAP_ZLIB_OFFSET = 8
 SALT_SIZE = 0x2000
 
 
@@ -122,6 +126,20 @@ def parse_int(value: str) -> int:
     return int(value, 0)
 
 
+def parse_resource_component(value: str) -> object:
+    try:
+        return int(value, 0)
+    except ValueError:
+        return value
+
+
+def parse_resource_ref(value: str) -> tuple[object, object]:
+    parts = value.split("/")
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError("resource reference must be TYPE/NAME, for example 10/STARTUP.TJS")
+    return parse_resource_component(parts[0]), parse_resource_component(parts[1])
+
+
 def read_file_offset(path: Path, offset: int, size: int) -> bytes:
     if offset < 0:
         raise ValueError(f"negative file offset: 0x{offset:x}")
@@ -133,8 +151,7 @@ def read_file_offset(path: Path, offset: int, size: int) -> bytes:
     return data
 
 
-def load_salt(args: argparse.Namespace, repo_root: Path) -> tuple[bytes, str]:
-    default_salt_file = repo_root / "salt_F44A00.bin"
+def load_salt(args: argparse.Namespace) -> tuple[bytes, str]:
     explicit_salt_file = args.salt_file is not None
     explicit_salt_source = (
         args.salt_source_exe is not None
@@ -155,9 +172,6 @@ def load_salt(args: argparse.Namespace, repo_root: Path) -> tuple[bytes, str]:
             salt_image = PeImage(salt_source_path)
             salt = salt_image.read_rva(args.salt_rva, SALT_SIZE)
             salt_source = f"{salt_source_path}:RVA 0x{args.salt_rva:x}"
-    elif default_salt_file.exists():
-        salt = default_salt_file.read_bytes()
-        salt_source = str(default_salt_file)
     else:
         salt = PeImage(args.exe).read_rva(args.salt_rva, SALT_SIZE)
         salt_source = f"{args.exe}:RVA 0x{args.salt_rva:x}"
@@ -167,11 +181,26 @@ def load_salt(args: argparse.Namespace, repo_root: Path) -> tuple[bytes, str]:
     return salt, salt_source
 
 
+def format_resource_key(key: tuple[object, object, object]) -> str:
+    return "/".join(str(part) for part in key)
+
+
 def find_resource(resources: dict[tuple[object, object, object], bytes], res_type: object, name: object) -> bytes:
     for (current_type, current_name, _language), data in resources.items():
         if current_type == res_type and current_name == name:
             return data
-    raise KeyError(f"resource {res_type!r}/{name!r} was not found")
+    sample = ", ".join(format_resource_key(key) for key in sorted(resources, key=format_resource_key)[:12])
+    suffix = f"; available resources include: {sample}" if sample else "; PE has no parsed resources"
+    raise KeyError(f"resource {res_type!r}/{name!r} was not found{suffix}")
+
+
+def find_optional_resource(
+    resources: dict[tuple[object, object, object], bytes], res_type: object, name: object
+) -> bytes | None:
+    try:
+        return find_resource(resources, res_type, name)
+    except KeyError:
+        return None
 
 
 def decode_bres_root(text_resource: bytes) -> str:
@@ -230,6 +259,17 @@ def parse_config_table(dll_path: Path, table_rva: int) -> dict[str, bytes]:
         result[label] = image.data[cursor : cursor + length]
         cursor += length
     return result
+
+
+def require_config(config: dict[str, bytes], label: str) -> bytes:
+    try:
+        return config[label]
+    except KeyError as exc:
+        labels = ", ".join(sorted(config)) or "<none>"
+        raise ValueError(
+            f"DLL config label {label!r} was not found; available labels: {labels}. "
+            "Check --table-rva or the BOOTSTRAP DLL layout."
+        ) from exc
 
 
 def choose_dotnet_x86(explicit: Path | None) -> Path:
@@ -326,14 +366,15 @@ def run_xp3_action(repo_root: Path, args: argparse.Namespace, drip_program: Path
 def main(argv: list[str] | None = None) -> int:
     repo_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(
-        description="Recover Sanoba Witch XP3 keys from static files, without game runtime dump/debugging."
+        description="Recover XP3 keys for this bres/BOOTSTRAP/Hxv4 encryption family from static files."
     )
-    parser.add_argument("--exe", type=Path, default=DEFAULT_EXE)
+    parser.add_argument("--exe", type=Path, required=True, help="target PE file that provides game resources")
     parser.add_argument("--work-dir", type=Path, default=repo_root / "data" / "static_recover")
+    parser.add_argument("--out", type=Path, help="output drip_program.json path; defaults to work-dir/drip_program.json")
     parser.add_argument(
         "--salt-file",
         type=Path,
-        help="read the 8192-byte bres salt from this file; overrides --salt-source-exe and default fallback",
+        help="read the 8192-byte bres salt from this file; overrides --salt-source-exe and --salt-rva",
     )
     parser.add_argument(
         "--salt-source-exe",
@@ -342,13 +383,53 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="program image used only for salt extraction; defaults to --exe when salt source is explicit",
     )
-    parser.add_argument("--salt-rva", type=parse_int, default=DEFAULT_SALT_RVA)
+    parser.add_argument(
+        "--salt-rva",
+        type=parse_int,
+        default=DEFAULT_SALT_RVA,
+        help="read salt from this PE RVA in the salt source; default matches known samples in this family",
+    )
     parser.add_argument(
         "--salt-file-offset",
         type=parse_int,
         help="read salt at an exact file offset from --salt-source-exe/--exe instead of mapping --salt-rva",
     )
-    parser.add_argument("--table-rva", type=parse_int, default=DEFAULT_TABLE_RVA)
+    parser.add_argument(
+        "--table-rva",
+        type=parse_int,
+        default=DEFAULT_TABLE_RVA,
+        help="BOOTSTRAP DLL config table RVA; default matches known samples in this family",
+    )
+    parser.add_argument(
+        "--startup-resource",
+        type=parse_resource_ref,
+        default=DEFAULT_STARTUP_RESOURCE,
+        help="resource TYPE/NAME for encrypted STARTUP.TJS; default 10/STARTUP.TJS",
+    )
+    parser.add_argument(
+        "--bootstrap-resource",
+        type=parse_resource_ref,
+        default=DEFAULT_BOOTSTRAP_RESOURCE,
+        help="resource TYPE/NAME for encrypted BOOTSTRAP; default 10/BOOTSTRAP",
+    )
+    parser.add_argument(
+        "--text-resource",
+        type=parse_resource_ref,
+        default=DEFAULT_TEXT_RESOURCE,
+        help="resource TYPE/NAME containing the bres root URL; default TEXT/127",
+    )
+    parser.add_argument(
+        "--plugin-resource",
+        type=parse_resource_ref,
+        default=DEFAULT_PLUGIN_RESOURCE,
+        help="optional resource TYPE/NAME copied for diagnostics; default 10/PLUGIN",
+    )
+    parser.add_argument(
+        "--bootstrap-zlib-offset",
+        type=parse_int,
+        default=DEFAULT_BOOTSTRAP_ZLIB_OFFSET,
+        help="bytes to skip before zlib-decompressing BOOTSTRAP payload; default 8",
+    )
     parser.add_argument("--dotnet-x86", type=Path)
     parser.add_argument("--skip-derive", action="store_true")
     parser.add_argument("--xp3", nargs="*", type=Path, help="optional XP3 archives to verify or extract")
@@ -370,11 +451,11 @@ def main(argv: list[str] | None = None) -> int:
     debug(args, f"loaded PE: sections={len(exe.sections)} resource_rva=0x{exe.resource_rva:x}")
     resources = exe.resources()
     debug(args, f"resources={len(resources)}")
-    startup_cipher = find_resource(resources, 10, "STARTUP.TJS")
-    bootstrap_cipher = find_resource(resources, 10, "BOOTSTRAP")
-    plugin_resource = resources.get((10, "PLUGIN", 1041))
-    text_127 = find_resource(resources, "TEXT", 127)
-    salt, salt_source = load_salt(args, repo_root)
+    startup_cipher = find_resource(resources, *args.startup_resource)
+    bootstrap_cipher = find_resource(resources, *args.bootstrap_resource)
+    plugin_resource = find_optional_resource(resources, *args.plugin_resource)
+    text_127 = find_resource(resources, *args.text_resource)
+    salt, salt_source = load_salt(args)
     debug(
         args,
         "resource sizes: "
@@ -393,18 +474,24 @@ def main(argv: list[str] | None = None) -> int:
     bootstrap_key = bres_key_from_url(bootstrap_url)
     bootstrap_prefix = find_bootstrap_prefix(strings)
     bootstrap_plain = decrypt_bres(bootstrap_cipher, bootstrap_key, salt)
-    dll_bytes = zlib.decompress(bootstrap_plain[8:])
+    try:
+        dll_bytes = zlib.decompress(bootstrap_plain[args.bootstrap_zlib_offset :])
+    except zlib.error as exc:
+        raise ValueError(
+            "BOOTSTRAP decrypted but did not zlib-decompress. "
+            "Check the bootstrap key, --bootstrap-zlib-offset, salt, or payload format."
+        ) from exc
     if dll_bytes[:2] != b"MZ":
-        raise ValueError("decompressed bootstrap payload is not a PE DLL")
+        raise ValueError("decompressed BOOTSTRAP payload is not a PE DLL; check --bootstrap-zlib-offset or format")
     debug(args, f"BOOTSTRAP decrypted bytes={len(bootstrap_plain)} dll_bytes={len(dll_bytes)}")
 
-    salt_path = work_dir / "salt_F44A00.bin"
+    salt_path = work_dir / "bres_salt.bin"
     startup_cipher_path = work_dir / "STARTUP_TJS.rcdata.bin"
     startup_plain_path = work_dir / "STARTUP.TJS.dec"
     bootstrap_cipher_path = work_dir / "BOOTSTRAP.rcdata.bin"
     bootstrap_plain_path = work_dir / "BOOTSTRAP.dec"
-    dll_path = work_dir / "Sabano.dll"
-    drip_path = work_dir / "sanoba.static.drip_program.json"
+    dll_path = work_dir / "bootstrap.dll"
+    drip_path = args.out or (work_dir / "drip_program.json")
 
     write_file(salt_path, salt)
     write_file(startup_cipher_path, startup_cipher)
@@ -416,8 +503,8 @@ def main(argv: list[str] | None = None) -> int:
         write_file(work_dir / "PLUGIN.rcdata.bin", plugin_resource)
 
     config = parse_config_table(dll_path, args.table_rva)
-    unique = config["UNIQUE"].decode("utf-16le")
-    warning = config["WARNING"].decode("ascii")
+    unique = require_config(config, "UNIQUE").decode("utf-16le")
+    warning = require_config(config, "WARNING").decode("ascii")
     final_bootstrap = bootstrap_prefix + warning
     debug(args, f"DLL config labels={','.join(sorted(config))}")
 

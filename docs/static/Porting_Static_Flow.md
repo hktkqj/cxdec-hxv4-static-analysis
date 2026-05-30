@@ -1,6 +1,6 @@
 # Cross-Game Static Flow Adaptation
 
-本文记录如何把现有 Sanoba Witch 静态 XP3 恢复流程迁移到同系列/同保护形态的其他游戏。目标是先确认静态链路是否成立，再做小范围 XP3 验证，最后按需提取单个包；不要一开始就对整个游戏目录做全量验证或提取。
+本文记录如何把当前静态 XP3 恢复流程用于同一类 bres/BOOTSTRAP/Hxv4 加密的游戏。目标是先确认静态链路是否成立，再做小范围 XP3 验证，最后按需提取单个包；不要一开始就对整个游戏目录做全量验证或提取。
 
 ## 适用前提
 
@@ -15,7 +15,7 @@
 | DLL 配置表 | 默认 RVA `0x80E38`，包含 `UNIQUE` 和 `WARNING` |
 | 派生工具 | x86 dotnet 可加载 BOOTSTRAP DLL 并运行 `FilterManagerDerive` |
 
-如果这些条件中任一项失败，再考虑 IDA 定位新的 salt RVA、DLL 配置表 RVA 或 bootstrap 逻辑。只要 `--debug --skip-derive` 能完整走到 `archive_unique_key` 输出，通常暂时不需要 IDA。
+这些是“同类加密”的判定条件，不是某一款游戏的专用条件。如果这些条件中任一项失败，先调整脚本参数；只有参数无法解释失败时，再考虑 IDA 定位新的 salt RVA、DLL 配置表 RVA 或 bootstrap 逻辑。只要 `--debug --skip-derive` 能完整走到 `archive_unique_key` 输出，通常暂时不需要 IDA。
 
 ## 推荐适配步骤
 
@@ -71,17 +71,17 @@ python src\static_extract\static_xp3_recover.py `
 
 ```text
 $game\temp\static_recover\static_recover.summary.json
-$game\temp\static_recover\sanoba.static.drip_program.json
+$game\temp\static_recover\drip_program.json
 ```
 
-`sanoba.static.drip_program.json` 文件名保留历史命名；它不是 Sanoba 专用，只要由目标游戏 EXE/DLL 派生出来，就应配套用于该目标游戏的 XP3。
+`drip_program.json` 必须与生成它的目标游戏 EXE/DLL 配套使用；不要混用其他游戏或其他版本生成的 JSON。需要兼容旧文档时，也可以用 `--out` 指定历史文件名。
 
 ### 4. 小范围验证 XP3
 
 先验证小包或代表性包的前若干条，不要直接把整个游戏目录作为 verify 目标：
 
 ```powershell
-$drip = "$game\temp\static_recover\sanoba.static.drip_program.json"
+$drip = "$game\temp\static_recover\drip_program.json"
 
 python src\common\xp3_inspect.py verify `
   "$game\main.xp3" "$game\scn.xp3" "$game\data.xp3" `
@@ -182,17 +182,51 @@ evimage.xp3: processed=528 written=528 unresolved_filter=0 failed=0
 | `FilterManagerDerive` 失败 | DLL 内派生函数 RVA 或调用约定变化，需要更新派生工具 |
 | 小范围 verify 出现 Adler mismatch | Hxv4 解析、open flag、archive update 或 filter runtime state 变化 |
 
+## 失败检查和问题汇报
+
+出现提取失败时，先区分失败阶段：
+
+| 阶段 | 检查项 |
+|------|--------|
+| 资源读取失败 | 用报错中的 available resources 检查 `--startup-resource`、`--bootstrap-resource`、`--text-resource` |
+| `STARTUP.TJS` 解密失败 | 确认 salt 是 0x2000 字节，并尝试 `--salt-rva`、`--salt-file-offset`、`--salt-file` |
+| BOOTSTRAP 解包失败 | 检查 `--bootstrap-zlib-offset`，以及 STARTUP 常量池中的 BOOTSTRAP URL 是否正确 |
+| 配置表失败 | 调整 `--table-rva`，确认 DLL 配置表仍包含 `UNIQUE` / `WARNING` |
+| 派生工具失败 | 确认 x86 dotnet 可用；如果 DLL 内函数 RVA 变化，需要更新 `FilterManagerDerive` |
+| verify / extract 失败 | 确认 `drip_program.json` 与目标 EXE/DLL/XP3 属于同一游戏版本，并查看 `manifest.jsonl` |
+
+汇报问题时请附上以下信息，避免只贴“提取失败”：
+
+```text
+目标游戏名 / 版本 / 商店来源:
+EXE 文件名和 SHA256:
+XP3 文件名和大小:
+执行的完整命令:
+static_xp3_recover.py --debug 输出:
+static_recover.summary.json 内容:
+verify 输出:
+extract-all manifest.jsonl 中 status != ok 的行:
+已尝试的参数:
+  --salt-rva / --salt-file-offset / --salt-file
+  --table-rva
+  --bootstrap-zlib-offset
+  --startup-resource / --bootstrap-resource / --text-resource
+```
+
 ## 参数速查
 
 | 参数 | 用途 |
 |------|------|
 | `--exe` | 提供 PE Resources 的目标游戏 EXE |
 | `--work-dir` | 中间文件和 `drip_program.json` 输出目录 |
+| `--out` | 指定 `drip_program.json` 输出路径 |
 | `--salt-file` | 直接指定 0x2000 字节 bres salt 文件 |
 | `--salt-source-exe` / `--runtime-exe` | 只用于读取 salt 的 PE 文件 |
 | `--salt-rva` | 从 salt source PE RVA 读取 salt，默认 `0x2E4A00` |
 | `--salt-file-offset` | 从 salt source 文件偏移读取 salt |
 | `--table-rva` | BOOTSTRAP DLL 配置表 RVA，默认 `0x80E38` |
+| `--startup-resource` / `--bootstrap-resource` / `--text-resource` | 目标 PE 中的资源名覆盖 |
+| `--bootstrap-zlib-offset` | BOOTSTRAP 明文中 zlib payload 的起始偏移，默认 `8` |
 | `--skip-derive` | 只做静态资源解密和 DLL 解包，不生成 drip program |
 | `--debug` | 输出阶段级诊断信息 |
 | `--verify` | 派生后调用 `xp3_inspect.py verify` |

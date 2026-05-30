@@ -1,6 +1,6 @@
-# Sanoba Witch XP3 资源逆向分析
+# bres/BOOTSTRAP/Hxv4 XP3 资源静态提取分析
 
-本仓库记录 **Sabbat of the Witch for Steam / Sanoba Witch** 的 XP3 资源保护分析与提取工具。
+本仓库最初记录 **Sabbat of the Witch for Steam / Sanoba Witch** 的 XP3 资源保护分析与提取工具；当前静态脚本已整理为面向同一类 bres/BOOTSTRAP/Hxv4 加密的恢复流程。
 
 当前项目保留两条路线：
 
@@ -9,32 +9,33 @@
 | 纯静态分析与提取 | 当前推荐 | 不启动游戏、不附加调试器，直接从原始 EXE 和 XP3 文件恢复解密状态 |
 | 动态 dump / 运行时抓取 | 历史流程与交叉验证 | 在静态流程未打通前，通过运行时 dump 或断点抓参取得 FilterManager 状态 |
 
-核心结论：Sanoba 当前样本已经可以走纯静态流程得到可用的 `drip_program.json`，不再需要运行时 dump。该流程也已用于 CafeStella 静态适配；不同游戏通常只需要确认 EXE 路径、salt 位置、DLL 配置表 RVA 和小范围 XP3 验证结果。
+核心结论：满足相同结构的样本可以走纯静态流程得到可用的 `drip_program.json`，不再需要运行时 dump。该流程已用于 Sanoba Witch 和 CafeStella 静态适配；不同游戏通常只需要确认 EXE 路径、salt 位置、DLL 配置表 RVA 和小范围 XP3 验证结果。
 
 ## 纯静态分析与提取
 
 静态流程入口：
 
 ```powershell
-python src\static_extract\static_xp3_recover.py
+python src\static_extract\static_xp3_recover.py --exe path\to\game.exe
 ```
 
 该流程完成的工作：
 
-1. 从原始 `SabbatOfTheWitch.exe` 的 PE Resources 提取 `STARTUP.TJS`、`BOOTSTRAP`、`PLUGIN` 和 `TEXT/127`。
-2. 从原始 EXE `PE RVA 0x2E4A00` 读取 0x2000 字节 bres salt，并用 `STARTUP.TJS -> TJS2100\0` 校验。
+1. 从目标 EXE 的 PE Resources 提取 `STARTUP.TJS`、`BOOTSTRAP`、可选 `PLUGIN` 和 `TEXT/127`。
+2. 默认从目标 EXE `PE RVA 0x2E4A00` 读取 0x2000 字节 bres salt，并用 `STARTUP.TJS -> TJS2100\0` 校验；也可显式传 `--salt-file` / `--salt-file-offset`。
 3. 用 `SHA3-384(path_key_utf16le + salt) + ChaCha8` 解密 bres:// 资源。
 4. 解析 `STARTUP.TJS` 的 TJS2 常量池，取得 BOOTSTRAP URL 和脚本级 `System.bootStrap` 参数。
 5. 解密 `BOOTSTRAP`，跳过 8 字节 header 后 zlib 解压出随机加密 DLL。
 6. 读取 DLL 配置表中的 `UNIQUE` 和 `WARNING`。
 7. 按 DLL 内 `System_bootStrap_callback` 的真实逻辑拼出最终 bootstrap 字符串。
-8. 调用 `FilterManagerDerive` 离线加载 DLL，执行内部派生函数，生成 `data/static_recover/sanoba.static.drip_program.json`。
+8. 调用 `FilterManagerDerive` 离线加载 DLL，执行内部派生函数，生成 `data/static_recover/drip_program.json`。
 9. 使用该 JSON 验证或提取 XP3。
 
 验证 `scn.xp3`：
 
 ```powershell
 python src\static_extract\static_xp3_recover.py `
+  --exe "F:\SteamLibrary\steamapps\common\sanoba witch\SabbatOfTheWitch.exe" `
   --xp3 "F:\SteamLibrary\steamapps\common\sanoba witch\scn.xp3" `
   --verify
 ```
@@ -61,7 +62,7 @@ python src\static_extract\static_xp3_recover.py `
 python src\common\xp3_inspect.py verify `
   "$game\main.xp3" "$game\scn.xp3" "$game\data.xp3" `
   --filter recovered `
-  --drip-program "$game\temp\static_recover\sanoba.static.drip_program.json" `
+  --drip-program "$game\temp\static_recover\drip_program.json" `
   --max-entries 20 `
   --verbose
 ```
@@ -153,13 +154,14 @@ docs/
 生成静态 `drip_program.json`：
 
 ```powershell
-python src\static_extract\static_xp3_recover.py
+python src\static_extract\static_xp3_recover.py --exe path\to\game.exe
 ```
 
 指定 salt 来源程序和 PE RVA：
 
 ```powershell
 python src\static_extract\static_xp3_recover.py `
+  --exe path\to\game.exe `
   --runtime-exe "F:\SteamLibrary\steamapps\common\sanoba witch\SabbatOfTheWitch.exe" `
   --salt-rva 0x2E4A00
 ```
@@ -168,6 +170,7 @@ python src\static_extract\static_xp3_recover.py `
 
 ```powershell
 python src\static_extract\static_xp3_recover.py `
+  --exe path\to\game.exe `
   --runtime-exe "F:\SteamLibrary\steamapps\common\sanoba witch\SabbatOfTheWitch.exe" `
   --salt-file-offset 0x2E3200
 ```
@@ -175,7 +178,7 @@ python src\static_extract\static_xp3_recover.py `
 单独恢复 bres salt：
 
 ```powershell
-python src\static_extract\recover_bres_salt.py --out salt_F44A00.bin
+python src\static_extract\recover_bres_salt.py --exe path\to\game.exe --out bres_salt.bin
 ```
 
 验证 XP3：
@@ -183,7 +186,7 @@ python src\static_extract\recover_bres_salt.py --out salt_F44A00.bin
 ```powershell
 python src\common\xp3_inspect.py verify `
   --filter recovered `
-  --drip-program data\static_recover\sanoba.static.drip_program.json `
+  --drip-program data\static_recover\drip_program.json `
   "F:\SteamLibrary\steamapps\common\sanoba witch\scn.xp3"
 ```
 
@@ -192,7 +195,7 @@ python src\common\xp3_inspect.py verify `
 ```powershell
 python src\common\xp3_inspect.py verify `
   --filter recovered `
-  --drip-program data\static_recover\sanoba.static.drip_program.json `
+  --drip-program data\static_recover\drip_program.json `
   --max-entries 20 `
   "F:\SteamLibrary\steamapps\common\CafeStella\main.xp3"
 ```
@@ -214,7 +217,7 @@ python src\static_extract\static_xp3_recover.py `
 ```powershell
 python src\common\xp3_inspect.py extract-all out\scn `
   --filter recovered `
-  --drip-program data\static_recover\sanoba.static.drip_program.json `
+  --drip-program data\static_recover\drip_program.json `
   "F:\SteamLibrary\steamapps\common\sanoba witch\scn.xp3"
 ```
 

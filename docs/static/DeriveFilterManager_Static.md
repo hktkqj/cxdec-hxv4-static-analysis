@@ -1,19 +1,19 @@
 # DeriveFilterManager Static Flow
 
-本文记录当前推荐的全静态流程：不启动游戏、不做运行时 dump、不附加 debugger，仅从 EXE 资源、已提取 salt 和随机加密 DLL 的静态配置派生 XP3 解密所需状态。
+本文记录当前推荐的全静态流程：不启动游戏、不做运行时 dump、不附加 debugger，仅从目标 EXE 资源、bres salt 和 BOOTSTRAP DLL 的静态配置派生 XP3 解密所需状态。
 
 ## 结论
 
-Sanoba Witch 当前样本可以通过静态文件直接得到可用的 XP3 解密状态。同一静态流程也已验证可迁移到 CafeStella：只要 EXE 资源布局、bres salt、BOOTSTRAP DLL 配置表和 DLL 派生入口保持一致，就不需要运行时 dump。
+当前脚本面向同一类 bres/BOOTSTRAP/Hxv4 加密，而不是某一款游戏。只要目标 EXE 资源布局、bres salt、BOOTSTRAP DLL 配置表和 DLL 派生入口保持一致，就不需要运行时 dump。
 
 ```powershell
-python src\static_extract\static_xp3_recover.py
+python src\static_extract\static_xp3_recover.py --exe path\to\game.exe
 ```
 
 脚本输出：
 
 ```text
-data/static_recover/sanoba.static.drip_program.json
+data/static_recover/drip_program.json
 ```
 
 该 JSON 已确认与早期 `data/sanoba_complete.drip_program.json` 在关键解密材料上等价：
@@ -53,7 +53,7 @@ python src\static_extract\static_xp3_recover.py `
 python src\common\xp3_inspect.py verify `
   "$game\main.xp3" "$game\scn.xp3" "$game\data.xp3" `
   --filter recovered `
-  --drip-program "$game\temp\static_recover\sanoba.static.drip_program.json" `
+  --drip-program "$game\temp\static_recover\drip_program.json" `
   --max-entries 20 `
   --verbose
 ```
@@ -78,8 +78,8 @@ data.xp3: checked=20 failed=0 unresolved_filter=0 limited_to=20
 
 | 输入 | 来源 |
 |------|------|
-| 游戏主程序 | `F:\SteamLibrary\steamapps\common\sanoba witch\SabbatOfTheWitch.exe` |
-| bres salt | 优先 `.\salt_F44A00.bin`；不存在时从原始 EXE `PE RVA 0x2E4A00` 读取 |
+| 游戏主程序 | 必须通过 `--exe` 指定目标 PE |
+| bres salt | 默认从目标 EXE `PE RVA 0x2E4A00` 读取；需要复用外部 salt 时显式传 `--salt-file` |
 | STARTUP.TJS 密文 | EXE `RCDATA/STARTUP.TJS` |
 | BOOTSTRAP 密文 | EXE `RCDATA/BOOTSTRAP` |
 | bres root key | EXE `TEXT/127` |
@@ -88,14 +88,14 @@ data.xp3: checked=20 failed=0 unresolved_filter=0 limited_to=20
 执行命令：
 
 ```powershell
-python src\static_extract\static_xp3_recover.py
+python src\static_extract\static_xp3_recover.py --exe path\to\game.exe
 ```
 
 `static_xp3_recover.py` 可以把资源来源 EXE 和 salt 来源程序分开指定。默认 `--exe` 同时提供 PE Resources 和 salt；如果需要从另一份运行时程序、脱壳程序或 dump 修复 PE 中取 salt，可使用：
 
 ```powershell
 python src\static_extract\static_xp3_recover.py `
-  --exe "F:\SteamLibrary\steamapps\common\sanoba witch\SabbatOfTheWitch.exe" `
+  --exe path\to\game.exe `
   --runtime-exe path\to\salt_source.exe `
   --salt-rva 0x2E4A00
 ```
@@ -106,7 +106,7 @@ python src\static_extract\static_xp3_recover.py `
 
 ```powershell
 python src\static_extract\static_xp3_recover.py `
-  --exe "F:\SteamLibrary\steamapps\common\sanoba witch\SabbatOfTheWitch.exe" `
+  --exe path\to\game.exe `
   --runtime-exe path\to\salt_source.exe `
   --salt-file-offset 0x2E3200
 ```
@@ -116,14 +116,13 @@ salt 读取优先级为：
 ```text
 显式 --salt-file
   -> 显式 --runtime-exe / --salt-source-exe / --salt-rva / --salt-file-offset
-  -> 默认 .\salt_F44A00.bin
   -> 默认 --exe + --salt-rva 0x2E4A00
 ```
 
 如果需要单独导出 salt：
 
 ```powershell
-python src\static_extract\recover_bres_salt.py --out salt_F44A00.bin
+python src\static_extract\recover_bres_salt.py --exe path\to\game.exe --out bres_salt.bin
 ```
 
 该命令会从原始 EXE 的 `PE RVA 0x2E4A00` 映射到文件偏移 `0x2E3200` 读取 0x2000 字节，并用 `STARTUP.TJS` 解密结果是否为 `TJS2100\0` 做校验。
@@ -150,7 +149,7 @@ TEXT / 127               -> bres://./9kpzeqme93usra66re54h69ymi
 `STARTUP.TJS` 和 `BOOTSTRAP` 使用同一套 bres:// 流加密。密钥材料由 path key 和 0x2000 字节 salt 派生：
 
 ```text
-digest = SHA3-384(path_key.encode("utf-16-le") + salt_F44A00)
+digest = SHA3-384(path_key.encode("utf-16-le") + bres_salt)
 ```
 
 ChaCha8 初始状态：
@@ -208,14 +207,14 @@ xuf2b4we2c5y8mi44vwhm6tqee
 因此脚本跳过前 8 字节，对剩余数据执行 zlib 解压，得到随机加密 DLL：
 
 ```text
-data/static_recover/1ae7153ed25d.dll
+data/static_recover/bootstrap.dll
 ```
 
 解压结果以 `MZ` 开头，大小约 763392 bytes。该 DLL 是 `FilterManagerDerive` 离线派生所需的真实加密模块。
 
 ### 6. DLL 配置表读取
 
-脚本按 PE RVA `0x80E38` 读取 `1ae7153ed25d.dll` 内的配置表。表结构为连续的 label-length-value：
+脚本按 PE RVA `0x80E38` 读取 `bootstrap.dll` 内的配置表。表结构为连续的 label-length-value：
 
 ```text
 ascii label + NUL
@@ -258,8 +257,8 @@ Sabbat_of_the_Witch (C)YUZUSOFT/JUNOS INC. All Rights Reserved.Warning! Extracti
 ```powershell
 & 'C:\Program Files (x86)\dotnet\dotnet.exe' `
   tools\FilterManagerDerive\bin\Debug\net8.0\FilterManagerDerive.dll `
-  --dll data\static_recover\1ae7153ed25d.dll `
-  --out data\static_recover\sanoba.static.drip_program.json `
+  --dll data\static_recover\bootstrap.dll `
+  --out data\static_recover\drip_program.json `
   --bootstrap-prefix "Sabbat_of_the_Witch (C)YUZUSOFT/JUNOS INC. All Rights Reserved." `
   --archive-text "{NENeMEGURuTSUMUGiTOUKoWAKANa}"
 ```
@@ -286,7 +285,7 @@ lanes
 关键结果：
 
 ```text
-data/static_recover/sanoba.static.drip_program.json
+data/static_recover/drip_program.json
 hxv4_key    = e4dc1d99d9d9fb1ae5f7529ee70f841bfadb13d12f4d22b99170d6cc6a62bc54
 hxv4_nonce0 = d99230e02623f4a0c4f2857682b4de6dfefe820b57060e50
 hxv4_nonce1 = b96f89630850dd23a13810c7718ad003936d1d4a3ae00890
@@ -299,7 +298,7 @@ hxv4_nonce1 = b96f89630850dd23a13810c7718ad003936d1d4a3ae00890
 ```powershell
 python src\common\xp3_inspect.py verify `
   --filter recovered `
-  --drip-program data\static_recover\sanoba.static.drip_program.json `
+  --drip-program data\static_recover\drip_program.json `
   "F:\SteamLibrary\steamapps\common\sanoba witch\scn.xp3"
 ```
 
@@ -314,11 +313,11 @@ scn.xp3: checked=26 failed=0 unresolved_filter=0
 ```powershell
 python src\common\xp3_inspect.py extract-all out\scn `
   --filter recovered `
-  --drip-program data\static_recover\sanoba.static.drip_program.json `
+  --drip-program data\static_recover\drip_program.json `
   "F:\SteamLibrary\steamapps\common\sanoba witch\scn.xp3"
 ```
 
-因此，对当前 Sanoba Witch 样本而言，完整提取链路已经不再需要运行时 dump、调试启动或进程附加；原始 EXE 提供 bres 资源和 salt，BOOTSTRAP 提供随机 DLL，DLL 配置表提供 bootstrap suffix 和 archive unique key，最终由 `FilterManagerDerive` 在离线进程中复现运行时密钥派生。
+因此，对满足上述前提的已验证样本而言，完整提取链路不再需要运行时 dump、调试启动或进程附加；目标 EXE 提供 bres 资源和 salt，BOOTSTRAP 提供 DLL，DLL 配置表提供 bootstrap suffix 和 archive unique key，最终由 `FilterManagerDerive` 在离线进程中复现运行时密钥派生。
 
 ## 自动化脚本
 
@@ -332,8 +331,8 @@ src/static_extract/static_xp3_recover.py
 
 | 输入 | 默认路径或来源 |
 |------|----------------|
-| 游戏 EXE | `F:\SteamLibrary\steamapps\common\sanoba witch\SabbatOfTheWitch.exe` |
-| bres salt | 优先 `.\salt_F44A00.bin`；不存在时从 EXE `PE RVA 0x2E4A00` 读取 |
+| 游戏 EXE | 必须通过 `--exe` 指定目标 PE |
+| bres salt | 默认从 EXE `PE RVA 0x2E4A00` 读取；需要复用外部 salt 时显式传 `--salt-file` |
 | STARTUP.TJS | EXE `RCDATA/STARTUP.TJS` |
 | BOOTSTRAP | EXE `RCDATA/BOOTSTRAP` |
 | bres root key | EXE `TEXT/127` |
@@ -353,10 +352,10 @@ data/static_recover/
 | `STARTUP.TJS.dec` | 解密后的 TJS2 字节码 |
 | `BOOTSTRAP.rcdata.bin` | PE 资源中的加密 BOOTSTRAP |
 | `BOOTSTRAP.dec` | 解密后的 BOOTSTRAP 载荷 |
-| `1ae7153ed25d.dll` | BOOTSTRAP 解包出的随机 DLL |
+| `bootstrap.dll` | BOOTSTRAP 解包出的 DLL |
 | `PLUGIN.rcdata.bin` | 可选插件资源备份 |
 | `static_recover.summary.json` | 静态流程摘要 |
-| `sanoba.static.drip_program.json` | 给 `src/common/xp3_inspect.py` 使用的解密状态 |
+| `drip_program.json` | 给 `src/common/xp3_inspect.py` 使用的解密状态 |
 
 ## 静态派生步骤
 
@@ -388,7 +387,7 @@ bres://./9kpzeqme93usra66re54h69ymi
 bres:// 流加密为 SHA3-384 + ChaCha8：
 
 ```text
-digest = SHA3-384(path_key.encode("utf-16le") + salt_F44A00)
+digest = SHA3-384(path_key.encode("utf-16le") + bres_salt)
 
 T[0..3]  = ChaCha const
 T[4..11] = digest[0:32]
@@ -431,7 +430,7 @@ xuf2b4we2c5y8mi44vwhm6tqee
 解压后得到：
 
 ```text
-1ae7153ed25d.dll
+bootstrap.dll
 ```
 
 ### 5. 读取 DLL 配置表
@@ -447,7 +446,7 @@ WARNING = Warning! Extracting this game data may infringe on author's rights.
 
 ### 6. 静态确定最终 bootstrap 字符串
 
-`1ae7153ed25d.dll` 中的 `System_bootStrap_callback` 会把脚本传入的第一个参数和 DLL 配置表中的 `WARNING` 拼接后传给核心派生函数。
+`bootstrap.dll` 中的 `System_bootStrap_callback` 会把脚本传入的第一个参数和 DLL 配置表中的 `WARNING` 拼接后传给核心派生函数。
 
 IDA 确认点：
 
@@ -473,8 +472,8 @@ Sabbat_of_the_Witch (C)YUZUSOFT/JUNOS INC. All Rights Reserved.Warning! Extracti
 ```powershell
 & 'C:\Program Files (x86)\dotnet\dotnet.exe' `
   tools\FilterManagerDerive\bin\Debug\net8.0\FilterManagerDerive.dll `
-  --dll data\static_recover\1ae7153ed25d.dll `
-  --out data\static_recover\sanoba.static.drip_program.json `
+  --dll data\static_recover\bootstrap.dll `
+  --out data\static_recover\drip_program.json `
   --bootstrap-prefix "Sabbat_of_the_Witch (C)YUZUSOFT/JUNOS INC. All Rights Reserved." `
   --archive-text "{NENeMEGURuTSUMUGiTOUKoWAKANa}"
 ```
@@ -487,7 +486,7 @@ Sabbat_of_the_Witch (C)YUZUSOFT/JUNOS INC. All Rights Reserved.Warning! Extracti
 sub_100157D0(manager + 8, archive_text_utf16le, byte_len, archive_seed)
 ```
 
-它不是 bootstrap 密码，而是归档级过滤状态更新输入。Sanoba 中应使用 DLL 配置表 `UNIQUE`：
+它不是 bootstrap 密码，而是归档级过滤状态更新输入；应使用目标 DLL 配置表中的 `UNIQUE`。某已验证样本中的示例值为：
 
 ```text
 {NENeMEGURuTSUMUGiTOUKoWAKANa}
@@ -501,11 +500,14 @@ sub_100157D0(manager + 8, archive_text_utf16le, byte_len, archive_seed)
 |------|------|
 | `--exe` | 目标游戏 EXE，提供 PE Resources |
 | `--work-dir` | 输出目录；跨游戏分析时建议使用目标游戏目录下的 `temp` |
+| `--out` | 指定 `drip_program.json` 输出路径 |
 | `--salt-file` | 直接指定 0x2000 字节 bres salt |
 | `--salt-source-exe` / `--runtime-exe` | 只用于 salt 提取的 PE 文件 |
 | `--salt-rva` | 从 salt source 的 PE RVA 读取 salt，默认 `0x2E4A00` |
 | `--salt-file-offset` | 从 salt source 的文件偏移读取 salt |
 | `--table-rva` | BOOTSTRAP DLL 配置表 RVA，默认 `0x80E38` |
+| `--startup-resource` / `--bootstrap-resource` / `--text-resource` | 覆盖目标 PE 中的资源名，默认 `10/STARTUP.TJS`、`10/BOOTSTRAP`、`TEXT/127` |
+| `--bootstrap-zlib-offset` | BOOTSTRAP 明文中 zlib payload 的起始偏移，默认 `8` |
 | `--skip-derive` | 只做资源解密和 DLL 解包，用于探测 |
 | `--debug` | 输出阶段级诊断信息 |
 | `--verify-max-entries` | 配合 `--verify` 做有限验证 |
@@ -515,7 +517,7 @@ sub_100157D0(manager + 8, archive_text_utf16le, byte_len, archive_seed)
 ```powershell
 python src\common\xp3_inspect.py verify `
   --filter recovered `
-  --drip-program path\to\sanoba.static.drip_program.json `
+  --drip-program path\to\drip_program.json `
   --max-entries 20 `
   path\to\main.xp3
 ```
@@ -530,7 +532,7 @@ python src\common\xp3_inspect.py verify `
 
 ## salt 的边界
 
-`salt_F44A00.bin` 是 8192 字节 bres salt。IDA 中它对应脱壳镜像 `.rdata` 的 `g_bres_salt_F44A00`，但它同时也以明文形式存在于原始 Steam EXE 的同一 PE RVA 映射位置。
+`bres_salt.bin` 是 8192 字节 bres salt。旧文档中的 `salt_F44A00.bin` 是同一数据的历史文件名；如果要使用旧文件名，需要通过 `--salt-file` 显式指定。IDA 中它对应脱壳镜像 `.rdata` 的 `g_bres_salt_F44A00`，但它同时也以明文形式存在于已验证样本的同一 PE RVA 映射位置。
 
 已新增自动提取脚本：
 
@@ -543,21 +545,22 @@ src/static_extract/recover_bres_salt.py
 1. 从原始游戏 EXE 的 PE Resources 读取加密 `STARTUP.TJS` 和 `TEXT/127` 中的 bres root key。
 2. 从原始 EXE 或指定 source 的 PE RVA / 文件偏移读取 8192 字节候选 salt。
 3. 用候选 salt 解密 `STARTUP.TJS`。
-4. 只有解密结果以 `TJS2100\0` 开头时，才写出 `salt_F44A00.bin`。
+4. 只有解密结果以 `TJS2100\0` 开头时，才写出 `bres_salt.bin`。
 
-默认即可从原始游戏 EXE 自动提取：
+默认即可从目标游戏 EXE 自动提取：
 
 ```powershell
-python src\static_extract\recover_bres_salt.py --out salt_F44A00.bin
+python src\static_extract\recover_bres_salt.py --exe path\to\game.exe --out bres_salt.bin
 ```
 
 等价显式命令：
 
 ```powershell
 python src\static_extract\recover_bres_salt.py `
-  --source "F:\SteamLibrary\steamapps\common\sanoba witch\SabbatOfTheWitch.exe" `
+  --exe path\to\game.exe `
+  --source path\to\game.exe `
   --pe-rva 0x2E4A00 `
-  --out salt_F44A00.bin
+  --out bres_salt.bin
 ```
 
 当前位置：
@@ -588,47 +591,52 @@ DeriveBresBasicCryptoKey / 0xC9BB20
 
 ```powershell
 python src\static_extract\recover_bres_salt.py `
+  --exe path\to\game.exe `
   --source path\to\flat_memory_dump.bin `
   --image-base 0xC60000 `
   --va 0xF44A00 `
-  --out salt_F44A00.bin
+  --out bres_salt.bin
 ```
 
 如果已知文件偏移，也可以直接指定：
 
 ```powershell
 python src\static_extract\recover_bres_salt.py `
-  --source "F:\SteamLibrary\steamapps\common\sanoba witch\SabbatOfTheWitch.exe" `
+  --exe path\to\game.exe `
+  --source path\to\game.exe `
   --file-offset 0x2E3200 `
-  --out salt_F44A00.bin
+  --out bres_salt.bin
 ```
 
 还可以对未知镜像做对齐扫描：
 
 ```powershell
 python src\static_extract\recover_bres_salt.py `
+  --exe path\to\game.exe `
   --source path\to\unpacked_main.bin `
   --scan `
   --scan-alignment 0x1000 `
-  --out salt_F44A00.bin
+  --out bres_salt.bin
 ```
 
-当前主流程脚本默认优先读取：
-
-```text
-.\salt_F44A00.bin
-```
-
-只有该文件不存在时才回退：
+当前主流程脚本默认不再自动读取仓库根目录中的 salt 文件，避免跨游戏误用旧样本。默认读取：
 
 ```text
 --salt-rva 0x2E4A00
 ```
 
+如果需要使用 `recover_bres_salt.py` 先导出的文件，必须显式传入：
+
+```powershell
+python src\static_extract\static_xp3_recover.py `
+  --exe path\to\game.exe `
+  --salt-file bres_salt.bin
+```
+
 此前失败的原因是使用了错误 RVA `0x344A00`：
 
 ```powershell
-python src\static_extract\recover_bres_salt.py --pe-rva 0x344A00 --out data\static_recover\salt_test.bin
+python src\static_extract\recover_bres_salt.py --exe path\to\game.exe --pe-rva 0x344A00 --out data\static_recover\salt_test.bin
 ```
 
 ```text
