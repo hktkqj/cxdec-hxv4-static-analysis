@@ -1068,15 +1068,20 @@ def command_verify(args: argparse.Namespace) -> int:
     failed = 0
     unresolved = 0
     checked = 0
+    max_entries = getattr(args, "max_entries", None)
     for path in iter_archives(args.paths):
         archive_failed = 0
         archive_unresolved = 0
         archive_checked = 0
+        archive_seen = 0
         _, entries, blob = read_archive(path)
         filter_states = load_filter_states_for_archive(blob, entries, args)
         for index, entry in enumerate(entries):
             if is_warning_entry(index, entry) and not args.include_warning:
                 continue
+            if max_entries is not None and archive_seen >= max_entries:
+                break
+            archive_seen += 1
             try:
                 result = extract_entry(
                     blob,
@@ -1109,6 +1114,7 @@ def command_verify(args: argparse.Namespace) -> int:
         print(
             f"{path.name}: checked={archive_checked} failed={archive_failed} "
             f"unresolved_filter={archive_unresolved}"
+            + (f" limited_to={max_entries}" if max_entries is not None else "")
         )
     return 1 if failed or unresolved else 0
 
@@ -1332,6 +1338,11 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--verbose", action="store_true")
     verify.add_argument("--drip-program", type=Path)
     verify.add_argument("--force-open-flag", type=int, choices=(0, 1))
+    verify.add_argument(
+        "--max-entries",
+        type=int,
+        help="verify at most this many non-warning entries per archive",
+    )
     verify.set_defaults(func=command_verify)
 
     extract_all = sub.add_parser("extract-all", help="extract all directly recoverable entries")

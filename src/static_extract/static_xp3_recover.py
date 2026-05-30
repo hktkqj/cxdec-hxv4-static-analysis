@@ -248,6 +248,11 @@ def run_command(args: list[str], cwd: Path) -> None:
     subprocess.run(args, cwd=cwd, check=True)
 
 
+def debug(args: argparse.Namespace, message: str) -> None:
+    if getattr(args, "debug", False):
+        print(f"[debug] {message}")
+
+
 def derive_drip_program(
     *,
     repo_root: Path,
@@ -284,6 +289,9 @@ def run_xp3_action(repo_root: Path, args: argparse.Namespace, drip_program: Path
         return
     xp3_args = [str(path) for path in args.xp3]
     if args.verify:
+        verify_args = []
+        if args.verify_max_entries is not None:
+            verify_args = ["--max-entries", str(args.verify_max_entries)]
         run_command(
             [
                 sys.executable,
@@ -293,6 +301,7 @@ def run_xp3_action(repo_root: Path, args: argparse.Namespace, drip_program: Path
                 "recovered",
                 "--drip-program",
                 str(drip_program),
+                *verify_args,
                 *xp3_args,
             ],
             repo_root,
@@ -344,24 +353,40 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-derive", action="store_true")
     parser.add_argument("--xp3", nargs="*", type=Path, help="optional XP3 archives to verify or extract")
     parser.add_argument("--verify", action="store_true", help="verify XP3 entries with recovered filter state")
+    parser.add_argument(
+        "--verify-max-entries",
+        type=int,
+        help="when --verify is used, verify at most this many non-warning entries per XP3 archive",
+    )
     parser.add_argument("--extract-output", type=Path, help="optional output directory for xp3_inspect extract-all")
+    parser.add_argument("--debug", action="store_true", help="print stage-level recovery diagnostics")
     args = parser.parse_args(argv)
 
     work_dir: Path = args.work_dir
     work_dir.mkdir(parents=True, exist_ok=True)
+    debug(args, f"work_dir={work_dir}")
 
     exe = PeImage(args.exe)
+    debug(args, f"loaded PE: sections={len(exe.sections)} resource_rva=0x{exe.resource_rva:x}")
     resources = exe.resources()
+    debug(args, f"resources={len(resources)}")
     startup_cipher = find_resource(resources, 10, "STARTUP.TJS")
     bootstrap_cipher = find_resource(resources, 10, "BOOTSTRAP")
     plugin_resource = resources.get((10, "PLUGIN", 1041))
     text_127 = find_resource(resources, "TEXT", 127)
     salt, salt_source = load_salt(args, repo_root)
+    debug(
+        args,
+        "resource sizes: "
+        f"STARTUP.TJS={len(startup_cipher)} BOOTSTRAP={len(bootstrap_cipher)} "
+        f"PLUGIN={len(plugin_resource) if plugin_resource is not None else 0} salt={len(salt)}",
+    )
 
     startup_key = decode_bres_root(text_127)
     startup_plain = decrypt_bres(startup_cipher, startup_key, salt)
     if startup_plain[:8] != b"TJS2100\0":
         raise ValueError("STARTUP.TJS did not decrypt to TJS2100")
+    debug(args, f"STARTUP.TJS decrypted bytes={len(startup_plain)}")
 
     strings = parse_tjs_strings(startup_plain)
     bootstrap_url = find_bootstrap_url(strings)
@@ -371,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     dll_bytes = zlib.decompress(bootstrap_plain[8:])
     if dll_bytes[:2] != b"MZ":
         raise ValueError("decompressed bootstrap payload is not a PE DLL")
+    debug(args, f"BOOTSTRAP decrypted bytes={len(bootstrap_plain)} dll_bytes={len(dll_bytes)}")
 
     salt_path = work_dir / "salt_F44A00.bin"
     startup_cipher_path = work_dir / "STARTUP_TJS.rcdata.bin"
@@ -393,6 +419,7 @@ def main(argv: list[str] | None = None) -> int:
     unique = config["UNIQUE"].decode("utf-16le")
     warning = config["WARNING"].decode("ascii")
     final_bootstrap = bootstrap_prefix + warning
+    debug(args, f"DLL config labels={','.join(sorted(config))}")
 
     summary = {
         "exe": str(args.exe),
@@ -415,6 +442,7 @@ def main(argv: list[str] | None = None) -> int:
     (work_dir / "static_recover.summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    debug(args, f"summary={work_dir / 'static_recover.summary.json'}")
 
     print(f"startup_key: {startup_key}")
     print(f"bootstrap_key: {bootstrap_key}")
