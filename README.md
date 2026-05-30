@@ -7,11 +7,13 @@
 | 路线 | 状态 | 用途 |
 | ------ | ------ | ------ |
 | 纯静态分析与提取 | 当前推荐 | 不启动游戏、不附加调试器，直接从原始 EXE 和 XP3 文件恢复解密状态 |
-| 动态 dump / 运行时抓取 | 历史流程与交叉验证 | 在静态流程未打通前，通过运行时 dump 或断点抓参取得 FilterManager 状态 |
+| 动态 dump / 运行时抓取 | 已弃用 | 通过运行时 dump 或断点抓参取得 FilterManager 状态 |
 
 满足相同加密密钥（或者说同一款游戏）的样本可以走纯静态流程得到可用的 `drip_program.json`，不再需要运行时 dump。该流程已用于 Sanoba Witch 和 CafeStella 静态适配；不同游戏通常只需要确认 EXE 路径、salt 位置、DLL 配置表 RVA 和小范围 XP3 验证结果。
 
 ## 纯静态分析与提取
+
+完整数据流请首先参考 [Flowchart](./Flowchart.md)。
 
 静态流程入口：
 
@@ -241,6 +243,11 @@ python tools\tjs2-decompiler\tjs2_decompiler.py input.tjs -o output.tjs
 ## 第三方项目
 
 [crate-1556/tjs2-decompiler](https://github.com/crate-1556/tjs2-decompiler) 是面向 Kirikiri / 吉里吉里引擎的 TJS2（TJS2100）字节码反编译器，可将编译后的 TJS2 字节码转换为可读、可分析的 TJS2 源码，并支持单文件、目录批量、递归目录、反汇编和文件信息查看等用法。本仓库保留 `tools/tjs2-decompiler` 作为脚本逻辑分析辅助工具。
+
+## AI 辅助创作、分析声明
+
+本仓库的部分文档整理、代码注释、分析思路归纳和脚本实现过程可能使用 AI 工具辅助完成。AI 辅助内容均以人工审阅、验证和修订后的结果为准，不代表对相关游戏、引擎或第三方项目权利归属的声明或变更。
+
 
 ## 许可说明
 
