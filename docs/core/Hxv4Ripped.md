@@ -20,7 +20,7 @@ XP3 Index
 
 ### 1.2 Descriptor 格式 (14 bytes)
 
-```
+```plain
 +0x00  payload_offset (uint64)  — 加密表在 XP3 文件中的物理偏移
 +0x08  payload_size (uint32)    — 加密表的大小
 +0x0C  flags (uint16)           — bit 0 = open_flag
@@ -28,11 +28,11 @@ XP3 Index
 
 ### 1.3 Payload 解密层
 
-```
+```plain
 ┌─────────────────────────────────────────┐
-│ Hxv4 Payload (加密)                      │
-│  +0x00  Poly1305 tag (16 bytes)          │
-│  +0x10  XChaCha20 ciphertext             │
+│ Hxv4 Payload (加密)                     │
+│  +0x00  Poly1305 tag (16 bytes)         │
+│  +0x10  XChaCha20 ciphertext            │
 └─────────────────────────────────────────┘
                     │
                     ▼
@@ -42,9 +42,9 @@ XP3 Index
                     │
                     ▼
 ┌─────────────────────────────────────────┐
-│ Hxv4 Payload (解密后)                     │
-│  +0x00  uncompressed_size (uint32)       │
-│  +0x04  zlib 压缩的 TJS Variant 数据       │
+│ Hxv4 Payload (解密后)                   │
+│  +0x00  uncompressed_size (uint32)      │
+│  +0x04  zlib 压缩的 TJS Variant 数据    │
 └─────────────────────────────────────────┘
                     │
                     ▼
@@ -56,32 +56,18 @@ XP3 Index
 
 `HXV4_KEY` 和 `HXV4_NONCES` 从运行时 `FilterManager` 状态导出。
 
-### 1.4 TJS Variant 格式
-
-解密后的数据为 **big-endian** TJS binary Variant，由 `TJSBinaryReader` 解析（[src/common/xp3_inspect.py:582](../../src/common/xp3_inspect.py#L582)）：
-
-| Tag | 类型 | 编码 |
-|-----|------|------|
-| 0/1 | null | 无额外数据 |
-| 2 | string | int32 长度 + UTF-16BE 字符 |
-| 3 | octet | int32 长度 + 原始字节 |
-| 4 | int64 | 8 bytes big-endian |
-| 5 | float64 | 8 bytes big-endian |
-| -127 | array | int32 长度 + N 个值 |
-| -63 | dict | int32 长度 + N 对 key-value |
-
-### 1.5 Record 结构
+### 1.4 Record 结构
 
 每条 Hxv4 record 包含：
 
-```
+```plain
 domain_hash[8]   — 域标识 (hex)
 file_hash[32]    — 文件标识 (hex)
 packed (uint32)  — 高 16 位 = archive_slot, 低 16 位 = filter_flag
 key (uint64)     — 唯一密钥，用于 filter 派生
 ```
 
-### 1.6 Entry 映射规则
+### 1.5 Entry 映射规则
 
 ```python
 archive_slot = (packed >> 16) & 0xFFFF
@@ -107,7 +93,7 @@ open_flag = Hxv4 descriptor.flags & 1   # ✓ 正确
 
 ### 2.1 入口函数
 
-```
+```plain
 DripValueImpl_get64_from_u32 (RVA 0x19070):
   lane = value & 0x7F
   seed = value >> 7
@@ -126,7 +112,7 @@ DripValueImpl_get64_from_u32 (RVA 0x19070):
 ### 2.3 操作码全集（20 种）
 
 | 常量 | RVA | 操作 | Python 实现 |
-|------|-----|------|-------------|
+| ------ | ----- | ------ | ------------- |
 | `DRIP_OP_STOP` | `0x51D90` | 停止执行 | `break` |
 | `DRIP_OP_ADD_IMM` | `0x17C50` | `result += param` | `result = result + param` |
 | `DRIP_OP_RECURSE` | `0x17C60` | 递归子程序 | `self._eval_records(records, pc, result, nested_state)` |
@@ -174,7 +160,7 @@ class DripProgram:
 
 ### 3.1 算法流程
 
-```
+```plain
 BuildFilterStateFromUniqueKey(state48, key64, open_flag):
 
   1. key 预处理:
@@ -202,7 +188,7 @@ BuildFilterStateFromUniqueKey(state48, key64, open_flag):
 
 ### 3.2 48-byte Seed State 布局
 
-```
+```plain
 Offset  Size  Field
 ------  ----  -----
 0x00    8     boundary_seed_0 (qword)
@@ -224,7 +210,7 @@ Offset  Size  Field
 
 `FilterImpl_InitState` (RVA `0x1000E240`) 将 boundary seed 初始化为 FilterBoundary 结构：
 
-```
+```plain
 从 boundary seed (uint64) 提取:
   pos0 = (value >> 48) & 0xFFFF     # 高 16 位
   pos1 = (value >> 32) & 0xFFFF     # 次 16 位
@@ -242,7 +228,7 @@ Offset  Size  Field
 
 #### Layer 1: Bulk XOR
 
-```
+```plain
 作用范围: logical offset [0, 16)
 Key:       16-byte bulk_key
 
@@ -252,7 +238,7 @@ for i in overlap_range:
 
 #### Layer 2: Split Boundary 分段
 
-```
+```plain
 按 split_offset 将当前 read range 分段:
 
   read_start < split_offset:
@@ -264,7 +250,7 @@ for i in overlap_range:
 
 #### Layer 3: Rotated Dword Key XOR
 
-```
+```plain
 对于每个 boundary range:
   for index in range(size):
     shift = ((logical_start + index) & 3) * 8
@@ -274,7 +260,7 @@ for i in overlap_range:
 
 即按文件逻辑偏移对齐位置，选择 dword key 的对应字节：
 
-```
+```plain
 logical offset % 4 == 0 → key byte 0
 logical offset % 4 == 1 → key byte 1
 logical offset % 4 == 2 → key byte 2
@@ -283,7 +269,7 @@ logical offset % 4 == 3 → key byte 3
 
 #### Layer 4: Boundary Byte XOR
 
-```
+```plain
 若当前 read range 覆盖 pos0 或 pos1:
   data[pos0 - read_start] ^= byte0
   data[pos1 - read_start] ^= byte1
@@ -325,7 +311,7 @@ def apply(self, data: bytearray, offset: int) -> bool:
 
 ### 5.1 结构
 
-```
+```plain
 FilterManager:
   +0x00  manager[0] wrapper  → 非空时表示就绪
   +0x04  manager[1]
@@ -341,7 +327,7 @@ FilterManager:
 
 ### 5.2 DripValueImpl
 
-```
+```plain
 DripValueImpl:
   +0x00  vtable
   +0x04  lanes[128]           → 每条 lane 0x10 bytes:
@@ -355,7 +341,7 @@ DripValueImpl:
 
 通过 `inspect_manager_dump.py` 从运行时 full-memory minidump 导出（[src/dynamic_capture/inspect_manager_dump.py](../../src/dynamic_capture/inspect_manager_dump.py)）：
 
-```
+```plain
 minidump → 解析模块列表 → 找到随机 DLL
   → 读取 g_FilterManager (RVA 0xAC9AC)
   → 遍历 128 条 Drip lane
@@ -371,6 +357,9 @@ minidump → 解析模块列表 → 找到随机 DLL
   "version": 1,
   "source_module": "4b048db14c27.dll",
   "source_module_base": 1903427584,
+  "hxv4_key": "e4dc1d99...",
+  "hxv4_nonce0": "d99230e0...",
+  "hxv4_nonce1": "b96f8963...",
   "holder_words": [2969312960, 3765254233, 876361130, 2698729434, 920, 456],
   "context_u32": [...3106 dwords...],
   "lanes": [
@@ -385,13 +374,49 @@ minidump → 解析模块列表 → 找到随机 DLL
 
 此文件是**所有离线提取操作的核心依赖**。
 
+### 5.4 离线解密时的使用方式
+
+`xp3_inspect.py --filter recovered --drip-program drip_program.json` 会把 `drip_program.json` 还原为 `DripProgram` 对象（[src/common/xp3_inspect.py:196](../../src/common/xp3_inspect.py#L196)）。其中：
+
+| JSON 字段 | 离线解密用途 |
+| ----------- | -------------- |
+| `hxv4_key` | 解密 XP3 内 Hxv4 payload 的 XChaCha20-Poly1305 key |
+| `hxv4_nonce0` / `hxv4_nonce1` | 按 `descriptor.flags & 1` 选择 Hxv4 payload nonce |
+| `holder_words` | 参与每个资源 key 的预处理、split offset 和 bulk key 派生 |
+| `context_u32` | DripValue VM 的全局查表数据 |
+| `lanes[].records` | DripValue VM 的 128 条 lane 程序，用来复现 `get64_from_u32()` |
+
+完整离线流程如下：
+
+```plain
+XP3 archive
+  → 读取 XP3 index
+  → 找到 Hxv4 descriptor
+  → 用 drip_program.hxv4_key + hxv4_nonce[flags & 1] 解密 Hxv4 payload
+  → zlib 解压 Hxv4 table
+  → 解析每条 Hxv4 record，得到 xp3_entry_index 和 64-bit resource key
+  → 对每条 record 调用 drip_program.build_filter_state(key, open_flag)
+  → 将 48-byte seed state 初始化为 FilterRuntimeState
+  → XP3 entry 读取、zlib 解压后，对数据执行 FilterRuntimeState.apply()
+  → 用 XP3 adlr 校验最终明文
+```
+
+关键实现对应关系：
+
+- Hxv4 payload 解密：`decrypt_hxv4_payload()` 使用 JSON 中的 `hxv4_key` / `hxv4_nonce*`，否则才回退到代码内置常量（[src/common/xp3_inspect.py:577](../../src/common/xp3_inspect.py#L577)）。
+- Hxv4 table 解析：`parse_hxv4_table()` 解密 payload、zlib 解压并解析 record（[src/common/xp3_inspect.py:658](../../src/common/xp3_inspect.py#L658)）。
+- entry → filter state 映射：`build_filter_state_map()` 对每条 Hxv4 record 调用 `build_filter_state(record.key, open_flag)`，生成按 XP3 entry index 索引的 filter state 表（[src/common/xp3_inspect.py:729](../../src/common/xp3_inspect.py#L729)）。
+- 条目内容还原：`extract_entry()` 先按 XP3 segment 读取并 zlib 解压，再在 `--filter recovered` 模式下对每个 chunk 调用 recovered filter，最后以 adler32 判断是否还原成功（[src/common/xp3_inspect.py:883](../../src/common/xp3_inspect.py#L883)）。
+
+`drip_program.json` 保存了两层材料：第一层用于打开 Hxv4 映射表，第二层用于复现运行时 DripValue VM，并按每个 Hxv4 record 的 resource key 动态派生实际的 stream filter state。
+
 ---
 
 ## 六、Stream Filter 运行时读路径
 
 随机 DLL 中的完整 stream read 调用链：
 
-```
+```plain
 CryptoFilterStream_Read_filter_after_read  (0x10010C80)
   → wrapped IStream::Read
   → FilterImpl_Apply_vfunc(buffer, bytes_read, offset_low, offset_high)
@@ -430,7 +455,7 @@ HXV4_NONCES = {
 全包 Adler32 验证（使用 recovered filter）：
 
 | 包文件 | 校验条目 | 失败 | 未解析 filter |
-|--------|---------|------|--------------|
+| -------- | --------- | ------ | -------------- |
 | allage.xp3 | 91 | 0 | 0 |
 | bgimage.xp3 | 108 | 0 | 0 |
 | bgm.xp3 | 93 | 0 | 0 |
@@ -454,7 +479,7 @@ DLL（`1ae7153ed25d.dll`）中的 `FileHashCompute_10016900` 函数。
 
 ### 9.2 调用链
 
-```
+```plain
 FileHashCompute_10016900   (0x10016900)
 ├── sub_1000E070(32, key_ptr, key_len)     → BLAKE2s 上下文初始化（带 key）
 │   ├── sub_10014140(ctx)                  → 写入标准 SHA-256 IV（实为 BLAKE2s IV）
@@ -480,7 +505,7 @@ FileHashCompute_10016900   (0x10016900)
 ### 9.4 FileHashCompute 三个关键输入参数
 
 | 参数 | 来源 | 内容说明 |
-|------|------|---------|
+| ------ | ------ | --------- |
 | **Key** | `this+4 / this+8`（DripValueImpl 衍生） | 32 字节 BLAKE2s key。由启动时 `System.bootStrap` 传入的密码 + 嵌入常量 `{NENeMEGURuTSUMUGiTOUKoWAKANa}` + `PARAMS` 块共同派生，无法在不知道密码的情况下独立重建 |
 | **Data** | `a2`（TJS octet 变量） | XP3 文件条目的原始内容字节，长度为 `Size` |
 | **Extra** | `a5`（可选 TJS 字符串） | 文件路径/名称的 UTF-16LE 编码（若非零则追加入哈希，贡献 `2 × char_count` 字节） |
@@ -490,7 +515,7 @@ FileHashCompute_10016900   (0x10016900)
 `sub_10010380` 实现了一个线性扫描的 key-value 表，包含以下三项：
 
 | 键 | 长度 | 内容 |
-|----|------|------|
+| ---- | ------ | ------ |
 | `PARAMS` | 22 字节 | 结构化配置参数：`04 06 02 00 07 01 03 05 03 00 05 04 02 01 01 02 00 80 26 02 C8 01` |
 | `UNIQUE` | 60 字节 | UTF-16LE 宽字符串：`{NENeMEGURuTSUMUGiTOUKoWAKANa}`（游戏专属标识符，来自角色名） |
 | `PUBKEY` | 248 字节 | PEM 格式 RSA-1024 公钥（`-----BEGIN PUBLIC KEY-----\nMIGJ...`） |
@@ -498,7 +523,7 @@ FileHashCompute_10016900   (0x10016900)
 
 ### 9.6 Key 派生流程（System_bootStrap_callback，0x1000EEB0）
 
-```
+```plain
 TJS 脚本调用：
   System.bootStrap(password_str, pubkey_octet, params_octet, ...)
                      │                │               │
@@ -519,7 +544,7 @@ TJS 脚本调用：
 ### 9.7 与标准算法差异对比
 
 | 特性 | 标准 SHA-256 | 标准 HMAC-SHA256 | 此实现 |
-|------|-------------|----------------|--------|
+| ------ | ------------- | ---------------- | -------- |
 | 算法基础 | SHA-256 | SHA-256 | BLAKE2s-256 |
 | Key 处理 | 无 | ipad/opad 填充 | BLAKE2s 参数块（标准 keyed） |
 | Padding | `0x80` + 消息长度 | 同 SHA-256 | BLAKE2s 标准 padding |

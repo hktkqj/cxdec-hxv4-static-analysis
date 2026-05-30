@@ -10,6 +10,7 @@
 
 - **Python 3.9+** — 主脚本语言
 - **PyCryptodome** — XChaCha20-Poly1305 解密
+- .NET 8 x86 runtime / SDK — 用于运行 `tools/FilterManagerDerive`
 
 ```powershell
 pip install pycryptodome
@@ -177,7 +178,7 @@ processed=528 written=528 unresolved_filter=0 failed=0
 
 ---
 
-## 步骤 D：运行时 Dump 备选流程
+## [Deprecated] 步骤 D：运行时 Dump 备选流程
 
 > 仅当静态流程无法定位 salt、BOOTSTRAP DLL 或派生逻辑时使用。
 

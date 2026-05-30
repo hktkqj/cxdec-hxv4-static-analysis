@@ -126,6 +126,10 @@ src/
     ├── decrypt_bres_resource.py    # bres:// SHA3-384 + ChaCha8 解密
     ├── tjs2_inspect.py             # TJS2100 字节码检查
     └── parse_dialogue.py           # KAG 对话解析
+
+tools/
+├── FilterManagerDerive/            # x86 .NET 离线派生 FilterManager 状态
+└── tjs2-decompiler/                # TJS2 字节码反编译工具，来自 crate-1556/tjs2-decompiler
 ```
 
 ## 文档结构
@@ -219,12 +223,24 @@ python src\common\xp3_inspect.py extract-all out\scn `
   "F:\SteamLibrary\steamapps\common\sanoba witch\scn.xp3"
 ```
 
+反编译 TJS2 字节码：
+
+```powershell
+python tools\tjs2-decompiler\tjs2_decompiler.py input.tjs -o output.tjs
+```
+
+`tools/tjs2-decompiler` 用于把提取出的 `TJS2100` 字节码还原为可读的 TJS2 源码。本仓库在该工具相关能力上感恩 [crate-1556/tjs2-decompiler](https://github.com/crate-1556/tjs2-decompiler) 项目。
+
 ## 环境要求
 
 - Python 3.9+
 - PyCryptodome
 - .NET 8 x86 runtime / SDK，用于运行 `tools/FilterManagerDerive`
 - Windows 环境；纯静态分析不需要启动游戏，动态 dump 工具需要 Windows 调试和进程读取 API
+
+## 第三方项目
+
+[crate-1556/tjs2-decompiler](https://github.com/crate-1556/tjs2-decompiler) 是面向 Kirikiri / 吉里吉里引擎的 TJS2（TJS2100）字节码反编译器，可将编译后的 TJS2 字节码转换为可读、可分析的 TJS2 源码，并支持单文件、目录批量、递归目录、反汇编和文件信息查看等用法。本仓库保留 `tools/tjs2-decompiler` 作为脚本逻辑分析辅助工具。
 
 ## 许可说明
 

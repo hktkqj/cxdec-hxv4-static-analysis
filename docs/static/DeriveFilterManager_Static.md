@@ -13,7 +13,7 @@ python src\static_extract\static_xp3_recover.py --exe path\to\game.exe
 脚本输出：
 
 ```text
-data/static_recover/drip_program.json
+data/static_recover/sanoba.static.drip_program.json
 ```
 
 该 JSON 已确认与早期 `data/sanoba_complete.drip_program.json` 在关键解密材料上等价：
@@ -316,6 +316,8 @@ python src\common\xp3_inspect.py extract-all out\scn `
   --drip-program data\static_recover\drip_program.json `
   "F:\SteamLibrary\steamapps\common\sanoba witch\scn.xp3"
 ```
+
+关于如何利用`drip_program.json`对文件进行解密的详细流程，请参考 [XP3 容器结构解析](../core/XP3Extract.md) 和 [Hxv4 / DripValue / FilterRuntimeState 分析](../core/Hxv4Ripped.md)。
 
 因此，对满足上述前提的已验证样本而言，完整提取链路不再需要运行时 dump、调试启动或进程附加；目标 EXE 提供 bres 资源和 salt，BOOTSTRAP 提供 DLL，DLL 配置表提供 bootstrap suffix 和 archive unique key，最终由 `FilterManagerDerive` 在离线进程中复现运行时密钥派生。
 
