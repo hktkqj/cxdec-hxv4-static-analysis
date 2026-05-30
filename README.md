@@ -130,8 +130,9 @@ src/
     └── parse_dialogue.py           # KAG 对话解析
 
 tools/
-├── FilterManagerDerive/            # x86 .NET 离线派生 FilterManager 状态
-└── tjs2-decompiler/                # TJS2 字节码反编译工具，来自 crate-1556/tjs2-decompiler
+└── FilterManagerDerive/            # x86 .NET 离线派生 FilterManager 状态
+    ├── FilterManagerDerive.cs      # 派生逻辑实现
+    └── FilterManagerDerive.sln
 ```
 
 ## 文档结构
@@ -225,12 +226,6 @@ python src\common\xp3_inspect.py extract-all out\scn `
   "F:\SteamLibrary\steamapps\common\sanoba witch\scn.xp3"
 ```
 
-反编译 TJS2 字节码：
-
-```powershell
-python tools\tjs2-decompiler\tjs2_decompiler.py input.tjs -o output.tjs
-```
-
 `tools/tjs2-decompiler` 用于把提取出的 `TJS2100` 字节码还原为可读的 TJS2 源码。本仓库在该工具相关能力上感恩 [crate-1556/tjs2-decompiler](https://github.com/crate-1556/tjs2-decompiler) 项目。
 
 ## 环境要求
@@ -242,12 +237,11 @@ python tools\tjs2-decompiler\tjs2_decompiler.py input.tjs -o output.tjs
 
 ## 第三方项目
 
-[crate-1556/tjs2-decompiler](https://github.com/crate-1556/tjs2-decompiler) 是面向 Kirikiri / 吉里吉里引擎的 TJS2（TJS2100）字节码反编译器，可将编译后的 TJS2 字节码转换为可读、可分析的 TJS2 源码，并支持单文件、目录批量、递归目录、反汇编和文件信息查看等用法。本仓库保留 `tools/tjs2-decompiler` 作为脚本逻辑分析辅助工具。
+[crate-1556/tjs2-decompiler](https://github.com/crate-1556/tjs2-decompiler) 是面向 Kirikiri / 吉里吉里引擎的 TJS2（TJS2100）字节码反编译器，可将编译后的 TJS2 字节码转换为可读、可分析的 TJS2 源码，并支持单文件、目录批量、递归目录、反汇编和文件信息查看等用法。本仓库曾使用 `tools/tjs2-decompiler` 作为脚本逻辑分析辅助工具。
 
 ## AI 辅助创作、分析声明
 
 本仓库的部分文档整理、代码注释、分析思路归纳和脚本实现过程可能使用 AI 工具辅助完成。AI 辅助内容均以人工审阅、验证和修订后的结果为准，不代表对相关游戏、引擎或第三方项目权利归属的声明或变更。
-
 
 ## 许可说明
 
