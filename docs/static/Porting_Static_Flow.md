@@ -9,13 +9,13 @@
 | 项目 | 预期 |
 |------|------|
 | 主程序 | Windows PE，资源表中有 `RCDATA/STARTUP.TJS`、`RCDATA/BOOTSTRAP`、可选 `RCDATA/PLUGIN` 和 `TEXT/127` |
-| bres salt | 可从主程序或指定 salt source 的 PE RVA / 文件偏移读取 0x2000 字节 |
+| bres salt | 默认可从主程序或指定 salt source 的初始化汇编中定位；packed 原始 EXE 可回退到 `forcedataxp3` / `TEXT` / `V2Link` 数据邻域；也可显式用 PE RVA / 文件偏移读取 0x2000 字节 |
 | STARTUP.TJS | 用 `TEXT/127` path key + salt 解密后为 `TJS2100\0` |
 | BOOTSTRAP | 解密后跳过 8 字节 header，剩余数据可 zlib 解压为 PE DLL |
 | DLL 配置表 | 默认 RVA `0x80E38`，包含 `UNIQUE` 和 `WARNING` |
 | 派生工具 | x86 dotnet 可加载 BOOTSTRAP DLL 并运行 `FilterManagerDerive` |
 
-这些是“同类加密”的判定条件，不是某一款游戏的专用条件。如果这些条件中任一项失败，先调整脚本参数；只有参数无法解释失败时，再考虑 IDA 定位新的 salt RVA、DLL 配置表 RVA 或 bootstrap 逻辑。只要 `--debug --skip-derive` 能完整走到 `archive_unique_key` 输出，通常暂时不需要 IDA。
+这些是“同类加密”的判定条件，不是某一款游戏的专用条件。如果这些条件中任一项失败，先调整脚本参数；只有参数无法解释失败时，再考虑 IDA 定位新的 salt 初始化逻辑、DLL 配置表 RVA 或 bootstrap 逻辑。只要 `--debug --skip-derive` 能完整走到 `archive_unique_key` 输出，通常暂时不需要 IDA。
 
 ## 推荐适配步骤
 
@@ -50,11 +50,11 @@ python src\static_extract\static_xp3_recover.py `
 [debug] DLL config labels=PARAMS,PUBKEY,UNIQUE,WARNING
 startup_key: xfgp9i53ygpktxjfjyzcjf5hg2
 bootstrap_key: daagz6fftpcf5ayewqa7246z6w
-salt_source: F:\SteamLibrary\steamapps\common\CafeStella\CafeStella.exe:RVA 0x2e4a00
+salt_source: F:\SteamLibrary\steamapps\common\CafeStella\CafeStella.exe:auto V2Link-before anchor RVA ... salt VA ... / RVA ... / file offset ...
 archive_unique_key: {Kanna+Natsume+Nozomi+Mei+Suzune}
 ```
 
-如果 `STARTUP.TJS did not decrypt to TJS2100`，优先检查 `--salt-rva` / `--salt-file-offset` / `--salt-file`。如果 DLL 配置表缺少 `UNIQUE` 或 `WARNING`，优先检查 `--table-rva`。
+如果 `STARTUP.TJS did not decrypt to TJS2100`，优先检查自动定位输出、`--salt-rva` / `--salt-file-offset` / `--salt-file`。如果 DLL 配置表缺少 `UNIQUE` 或 `WARNING`，优先检查 `--table-rva`。
 
 ### 3. 生成静态 drip program
 
@@ -148,7 +148,7 @@ manifest=F:\SteamLibrary\steamapps\common\CafeStella\temp\evimage_extract\manife
 |------|----|
 | 游戏目录 | `F:\SteamLibrary\steamapps\common\CafeStella` |
 | 主程序 | `CafeStella.exe` |
-| salt source | `CafeStella.exe:RVA 0x2e4a00` |
+| salt source | 自动定位；packed 原始 EXE 通常通过 `V2Link-before` / `forcedataxp3-near` 数据邻域命中 |
 | DLL 配置表 RVA | `0x80E38` |
 | STARTUP key | `xfgp9i53ygpktxjfjyzcjf5hg2` |
 | BOOTSTRAP key | `daagz6fftpcf5ayewqa7246z6w` |
@@ -221,8 +221,8 @@ extract-all manifest.jsonl 中 status != ok 的行:
 | `--work-dir` | 中间文件和 `drip_program.json` 输出目录 |
 | `--out` | 指定 `drip_program.json` 输出路径 |
 | `--salt-file` | 直接指定 0x2000 字节 bres salt 文件 |
-| `--salt-source-exe` / `--runtime-exe` | 只用于读取 salt 的 PE 文件 |
-| `--salt-rva` | 从 salt source PE RVA 读取 salt，默认 `0x2E4A00` |
+| `--salt-source-exe` / `--runtime-exe` | 只用于读取 salt 的 PE 文件；默认在该 PE 中扫描 salt 初始化赋值和 packed 数据邻域 |
+| `--salt-rva` | 显式从 salt source PE RVA 读取 salt |
 | `--salt-file-offset` | 从 salt source 文件偏移读取 salt |
 | `--table-rva` | BOOTSTRAP DLL 配置表 RVA，默认 `0x80E38` |
 | `--startup-resource` / `--bootstrap-resource` / `--text-resource` | 目标 PE 中的资源名覆盖 |

@@ -24,7 +24,7 @@ python src\static_extract\static_xp3_recover.py --exe path\to\game.exe
 该流程完成的工作：
 
 1. 从目标 EXE 的 PE Resources 提取 `STARTUP.TJS`、`BOOTSTRAP`、可选 `PLUGIN` 和 `TEXT/127`。
-2. 默认从目标 EXE `PE RVA 0x2E4A00` 读取 0x2000 字节 bres salt，并用 `STARTUP.TJS -> TJS2100\0` 校验；也可显式传 `--salt-file` / `--salt-file-offset`。
+2. 默认先扫描目标 EXE 汇编中的 `salt_ptr` / `0x2000` 初始化赋值；若原始 packed EXE 没有可见 xref，则回退到 `forcedataxp3` / `TEXT` / `V2Link` 数据邻域定位 0x2000 字节 bres salt，并用 `STARTUP.TJS -> TJS2100\0` 校验；也可显式传 `--salt-rva` / `--salt-file` / `--salt-file-offset`。
 3. 用 `SHA3-384(path_key_utf16le + salt) + ChaCha8` 解密 bres:// 资源。
 4. 解析 `STARTUP.TJS` 的 TJS2 常量池，取得 BOOTSTRAP URL 和脚本级 `System.bootStrap` 参数。
 5. 解密 `BOOTSTRAP`，跳过 8 字节 header 后 zlib 解压出随机加密 DLL。
@@ -162,13 +162,13 @@ docs/
 python src\static_extract\static_xp3_recover.py --exe path\to\game.exe
 ```
 
-指定 salt 来源程序和 PE RVA：
+显式指定 salt 来源程序和 PE RVA：
 
 ```powershell
 python src\static_extract\static_xp3_recover.py `
   --exe path\to\game.exe `
   --runtime-exe "F:\SteamLibrary\steamapps\common\sanoba witch\SabbatOfTheWitch.exe" `
-  --salt-rva 0x2E4A00
+  --salt-rva 0x........
 ```
 
 指定 salt 来源程序和文件偏移：

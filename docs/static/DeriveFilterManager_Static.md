@@ -79,7 +79,7 @@ data.xp3: checked=20 failed=0 unresolved_filter=0 limited_to=20
 | 输入 | 来源 |
 |------|------|
 | 游戏主程序 | 必须通过 `--exe` 指定目标 PE |
-| bres salt | 默认从目标 EXE `PE RVA 0x2E4A00` 读取；需要复用外部 salt 时显式传 `--salt-file` |
+| bres salt | 默认扫描目标 EXE 汇编中的 `salt_ptr` / `0x2000` 初始化赋值；packed 原始 EXE 可回退到 `forcedataxp3` / `TEXT` / `V2Link` 数据邻域；需要复用外部 salt 时显式传 `--salt-file` |
 | STARTUP.TJS 密文 | EXE `RCDATA/STARTUP.TJS` |
 | BOOTSTRAP 密文 | EXE `RCDATA/BOOTSTRAP` |
 | bres root key | EXE `TEXT/127` |
@@ -91,13 +91,12 @@ data.xp3: checked=20 failed=0 unresolved_filter=0 limited_to=20
 python src\static_extract\static_xp3_recover.py --exe path\to\game.exe
 ```
 
-`static_xp3_recover.py` 可以把资源来源 EXE 和 salt 来源程序分开指定。默认 `--exe` 同时提供 PE Resources 和 salt；如果需要从另一份运行时程序、脱壳程序或 dump 修复 PE 中取 salt，可使用：
+`static_xp3_recover.py` 可以把资源来源 EXE 和 salt 来源程序分开指定。默认 `--exe` 同时提供 PE Resources，并通过汇编赋值特征或 packed 数据邻域自动定位 salt；如果需要从另一份运行时程序、脱壳程序或 dump 修复 PE 中自动定位 salt，可使用：
 
 ```powershell
 python src\static_extract\static_xp3_recover.py `
   --exe path\to\game.exe `
-  --runtime-exe path\to\salt_source.exe `
-  --salt-rva 0x2E4A00
+  --runtime-exe path\to\salt_source.exe
 ```
 
 其中 `--runtime-exe` 是 `--salt-source-exe` 的别名，只影响 salt 提取，不影响 `STARTUP.TJS` / `BOOTSTRAP` 的 PE Resource 来源。
@@ -115,8 +114,9 @@ salt 读取优先级为：
 
 ```text
 显式 --salt-file
-  -> 显式 --runtime-exe / --salt-source-exe / --salt-rva / --salt-file-offset
-  -> 默认 --exe + --salt-rva 0x2E4A00
+  -> 显式 --salt-rva / --salt-file-offset
+  -> 指定 --runtime-exe / --salt-source-exe 的自动定位
+  -> 默认 --exe 的自动定位
 ```
 
 如果需要单独导出 salt：
@@ -125,7 +125,7 @@ salt 读取优先级为：
 python src\static_extract\recover_bres_salt.py --exe path\to\game.exe --out bres_salt.bin
 ```
 
-该命令会从原始 EXE 的 `PE RVA 0x2E4A00` 映射到文件偏移 `0x2E3200` 读取 0x2000 字节，并用 `STARTUP.TJS` 解密结果是否为 `TJS2100\0` 做校验。
+该命令会优先扫描原始 EXE 中类似 `mov [salt_ptr_global], salt_va; mov [salt_size_global], 0x2000` 的初始化汇编；若原始 packed EXE 没有可见 xref，则回退到 `forcedataxp3` / `TEXT` / `V2Link` 数据邻域。所有候选都会用 `STARTUP.TJS` 解密结果是否为 `TJS2100\0` 做校验。
 
 ### 2. PE 资源提取
 
@@ -334,7 +334,7 @@ src/static_extract/static_xp3_recover.py
 | 输入 | 默认路径或来源 |
 |------|----------------|
 | 游戏 EXE | 必须通过 `--exe` 指定目标 PE |
-| bres salt | 默认从 EXE `PE RVA 0x2E4A00` 读取；需要复用外部 salt 时显式传 `--salt-file` |
+| bres salt | 默认扫描 EXE 汇编中的 `salt_ptr` / `0x2000` 初始化赋值；packed 原始 EXE 可回退到 `forcedataxp3` / `TEXT` / `V2Link` 数据邻域；需要复用外部 salt 时显式传 `--salt-file` |
 | STARTUP.TJS | EXE `RCDATA/STARTUP.TJS` |
 | BOOTSTRAP | EXE `RCDATA/BOOTSTRAP` |
 | bres root key | EXE `TEXT/127` |
@@ -504,8 +504,8 @@ sub_100157D0(manager + 8, archive_text_utf16le, byte_len, archive_seed)
 | `--work-dir` | 输出目录；跨游戏分析时建议使用目标游戏目录下的 `temp` |
 | `--out` | 指定 `drip_program.json` 输出路径 |
 | `--salt-file` | 直接指定 0x2000 字节 bres salt |
-| `--salt-source-exe` / `--runtime-exe` | 只用于 salt 提取的 PE 文件 |
-| `--salt-rva` | 从 salt source 的 PE RVA 读取 salt，默认 `0x2E4A00` |
+| `--salt-source-exe` / `--runtime-exe` | 只用于 salt 提取的 PE 文件；未指定 `--salt-rva` / `--salt-file-offset` 时也会在该 PE 中自动扫描 salt 初始化赋值和 packed 数据邻域 |
+| `--salt-rva` | 显式从 salt source 的 PE RVA 读取 salt |
 | `--salt-file-offset` | 从 salt source 的文件偏移读取 salt |
 | `--table-rva` | BOOTSTRAP DLL 配置表 RVA，默认 `0x80E38` |
 | `--startup-resource` / `--bootstrap-resource` / `--text-resource` | 覆盖目标 PE 中的资源名，默认 `10/STARTUP.TJS`、`10/BOOTSTRAP`、`TEXT/127` |
@@ -545,7 +545,7 @@ src/static_extract/recover_bres_salt.py
 该脚本的自动化逻辑是：
 
 1. 从原始游戏 EXE 的 PE Resources 读取加密 `STARTUP.TJS` 和 `TEXT/127` 中的 bres root key。
-2. 从原始 EXE 或指定 source 的 PE RVA / 文件偏移读取 8192 字节候选 salt。
+2. 默认扫描原始 EXE 或指定 source 的 `salt_ptr` / `0x2000` 初始化赋值；若没有命中，则扫描 packed 数据邻域；显式参数仍可从 PE RVA / 文件偏移读取 8192 字节候选 salt。
 3. 用候选 salt 解密 `STARTUP.TJS`。
 4. 只有解密结果以 `TJS2100\0` 开头时，才写出 `bres_salt.bin`。
 
@@ -555,13 +555,13 @@ src/static_extract/recover_bres_salt.py
 python src\static_extract\recover_bres_salt.py --exe path\to\game.exe --out bres_salt.bin
 ```
 
-等价显式命令：
+显式 PE RVA 覆盖示例：
 
 ```powershell
 python src\static_extract\recover_bres_salt.py `
   --exe path\to\game.exe `
   --source path\to\game.exe `
-  --pe-rva 0x2E4A00 `
+  --pe-rva 0x........ `
   --out bres_salt.bin
 ```
 
@@ -621,11 +621,7 @@ python src\static_extract\recover_bres_salt.py `
   --out bres_salt.bin
 ```
 
-当前主流程脚本默认不再自动读取仓库根目录中的 salt 文件，避免跨游戏误用旧样本。默认读取：
-
-```text
---salt-rva 0x2E4A00
-```
+当前主流程脚本默认不再自动读取仓库根目录中的 salt 文件，也不再使用固定 salt RVA，避免跨游戏误用旧样本。默认行为是从 `--exe` 或 `--runtime-exe` 指定的 PE 中扫描初始化汇编和 packed 数据邻域定位 salt。
 
 如果需要使用 `recover_bres_salt.py` 先导出的文件，必须显式传入：
 
@@ -646,7 +642,7 @@ PE RVA 0x344a00 did not verify
 no valid salt recovered
 ```
 
-修正为 `0x2E4A00` 后，原始 packed EXE 可以直接恢复 salt，不需要先脱壳。
+修正为正确 RVA 后，原始 packed EXE 可以直接恢复 salt；现在默认会优先尝试从初始化汇编中自动定位该 RVA。
 
 ## 与 LiveDump 流程的差异
 
@@ -657,4 +653,4 @@ no valid salt recovered
 | bootstrap 字符串 | STARTUP.TJS 常量池 + DLL `WARNING` |
 | context | 离线调用 DLL 内部派生函数生成 |
 | DLL | 从 EXE `RCDATA/BOOTSTRAP` 解密解包 |
-| 主要风险 | 需要使用正确 salt PE RVA `0x2E4A00`，以及 x86 dotnet 能加载目标 DLL |
+| 主要风险 | 需要能从初始化汇编或 packed 数据邻域自动定位 salt，或显式提供正确 salt PE RVA / 文件偏移；同时 x86 dotnet 要能加载目标 DLL |

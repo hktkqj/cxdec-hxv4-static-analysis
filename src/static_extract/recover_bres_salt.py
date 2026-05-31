@@ -13,11 +13,11 @@ if str(SRC_ROOT) not in sys.path:
 from common.decrypt_bres_resource import decrypt_bres
 from common.pe_image import PeImage, find_resource
 from static_extract.bres_bootstrap import (
-    DEFAULT_SALT_RVA,
     DEFAULT_STARTUP_RESOURCE,
     DEFAULT_TEXT_RESOURCE,
     SALT_SIZE,
     decode_bres_root,
+    iter_auto_salt_candidates,
     parse_int,
     parse_resource_ref,
 )
@@ -89,15 +89,6 @@ def load_startup_probe(
     return startup_cipher, startup_key
 
 
-def try_pe_rva(path: Path, rva: int) -> tuple[int, bytes] | None:
-    image = PeImage(path)
-    offset = image.rva_to_offset(rva)
-    salt = image.data[offset : offset + SALT_SIZE]
-    if len(salt) != SALT_SIZE:
-        return None
-    return offset, salt
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Extract and verify the 8192-byte bres salt for this bres resource encryption family."
@@ -112,8 +103,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--pe-rva",
         type=parse_int,
-        default=DEFAULT_SALT_RVA,
-        help="map this PE RVA through source section headers; default matches known samples in this family",
+        help="explicitly map this PE RVA through source section headers",
     )
     parser.add_argument(
         "--startup-resource",
@@ -145,21 +135,48 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         source_size = source.stat().st_size
+        try:
+            source_image = PeImage(source)
+        except Exception as exc:
+            source_image = None
+            if args.pe_rva is not None:
+                print(f"[-] {source}: PE parse failed for --pe-rva: {exc}")
+
         if args.pe_rva is not None:
-            try:
-                result = try_pe_rva(source, args.pe_rva)
-            except Exception as exc:
-                print(f"[-] {source}: PE RVA 0x{args.pe_rva:x}: {exc}")
-            else:
-                if result is not None:
-                    offset, salt = result
-                    if verify_salt(salt, startup_cipher, startup_key):
+            if source_image is not None:
+                try:
+                    offset = source_image.rva_to_offset(args.pe_rva)
+                    salt = source_image.data[offset : offset + SALT_SIZE]
+                except Exception as exc:
+                    print(f"[-] {source}: PE RVA 0x{args.pe_rva:x}: {exc}")
+                else:
+                    if len(salt) == SALT_SIZE and verify_salt(salt, startup_cipher, startup_key):
                         args.out.parent.mkdir(parents=True, exist_ok=True)
                         args.out.write_bytes(salt)
                         print(f"[+] recovered salt from {source} PE RVA 0x{args.pe_rva:x} / file offset 0x{offset:x}")
                         print(f"[+] wrote {args.out} sha256={hashlib.sha256(salt).hexdigest()}")
                         return 0
                     print(f"[-] {source}: PE RVA 0x{args.pe_rva:x} did not verify")
+
+        if source_image is not None:
+            found_auto_candidate = False
+            for candidate in iter_auto_salt_candidates(source_image):
+                found_auto_candidate = True
+                if verify_salt(candidate.salt, startup_cipher, startup_key):
+                    args.out.parent.mkdir(parents=True, exist_ok=True)
+                    args.out.write_bytes(candidate.salt)
+                    print(
+                        "[+] recovered salt from "
+                        f"{candidate.source_label(source)}"
+                    )
+                    print(f"[+] wrote {args.out} sha256={hashlib.sha256(candidate.salt).hexdigest()}")
+                    return 0
+                print(
+                    "[-] "
+                    f"{candidate.source_label(source)} did not verify"
+                )
+            if not found_auto_candidate:
+                print(f"[-] {source}: no salt pointer/size assignment or packed-neighborhood pattern found")
 
         for label, offset in candidate_offsets(args, source_size):
             salt = read_at(source, offset)
@@ -185,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[-] {source}: scan did not find a verifying salt")
 
     print("[!] no valid salt recovered")
-    print("    For the packed Steam EXE alone this is expected; provide an unpacked main image/dump or IDA-exported bytes.")
+    print("    Try --pe-rva / --file-offset / --salt-file, or provide an unpacked image/dump with --source.")
     return 1
 
 

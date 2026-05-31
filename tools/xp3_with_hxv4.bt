@@ -1,0 +1,252 @@
+//------------------------------------------------
+// 010 Editor Binary Template
+// File:    xp3_hxv4.bt
+// Author:  sanobawitchi_xp3analysis
+// Purpose: Parse KiriKiri/TVP XP3 archive (with Hxv4 variant)
+//
+// Supports:
+//   - Standard XP3 header
+//   - Game variant: fake index_offset 0x17, real offset at 0x20
+//   - zlib-compressed / uncompressed index
+//   - File chunks (info / segm / adlr sub-chunks)
+//   - Hxv4 custom top-level chunk (14-byte descriptor)
+//   - Hxv4 encrypted payload (Poly1305 tag + XChaCha20 ciphertext)
+//
+// NOTE: The index is optionally zlib-compressed. When flag = 1, this template
+// only marks the compressed blob as raw bytes — 010 Editor cannot decompress
+// inline. Run the Python scripts to inspect decompressed index content.
+//------------------------------------------------
+
+LittleEndian();
+
+//------------------------------------------------
+// Colour palette
+//------------------------------------------------
+#define CLR_HEADER   0xA8D8EA   // light blue
+#define CLR_INDEX    0xFFD3B6   // light orange
+#define CLR_FILE     0xD5ECC2   // light green
+#define CLR_SEGM     0xFFE8D6   // peach
+#define CLR_ADLR     0xE8D5F5   // lavender
+#define CLR_INFO     0xD6EAF8   // pale sky
+#define CLR_HXV4     0xFFE082   // amber
+#define CLR_PAYLOAD  0xF48FB1   // pink
+
+//------------------------------------------------
+// Colour helper — sets both bg and applies name
+//------------------------------------------------
+// (010 editor SetBackColor is enough; ForeColor not needed)
+
+//================================================
+// 1. XP3 Header
+//================================================
+
+typedef struct {
+    uchar  magic[11]    <bgcolor=CLR_HEADER, comment="XP3 magic">;
+    uint64 index_offset <bgcolor=CLR_HEADER, comment="Standard offset; 0x17 = game variant (see real_index_offset below)">;
+} XP3_HEADER;
+
+//================================================
+// 2. Game-variant extra pointer block (only when index_offset == 0x17)
+//================================================
+
+typedef struct {
+    // Standard header ends at 0x13 (11 magic + 8 index_offset).
+    // Real index offset sits at 0x20, so 0x20 - 0x13 = 13 bytes of padding.
+    uchar  padding[13]       <bgcolor=CLR_HEADER, comment="Bytes 0x13-0x1F (unused / internal game data)">;
+    uint64 real_index_offset <bgcolor=CLR_HEADER, comment="True index offset at file offset 0x20">;
+} XP3_EXTRA_PTR;
+
+//================================================
+// 3. Index header
+//================================================
+
+typedef struct {
+    uchar flag <bgcolor=CLR_INDEX, comment="0=raw, 1=zlib compressed">;
+    if (flag == 0) {
+        uint64 index_size  <bgcolor=CLR_INDEX, comment="Raw index size in bytes">;
+    } else if (flag == 1) {
+        uint64 compressed_size   <bgcolor=CLR_INDEX, comment="Compressed index size">;
+        uint64 original_size     <bgcolor=CLR_INDEX, comment="Decompressed index size">;
+    }
+} XP3_INDEX_HEADER;
+
+//================================================
+// 4. Index chunk types (parsed only when flag == 0)
+//================================================
+
+// ---- info sub-chunk body ----
+typedef struct (uint64 body_size) {
+    uint32  flags         <bgcolor=CLR_INFO, comment="bit31=protected/encrypted">;
+    uint64  original_size <bgcolor=CLR_INFO>;
+    uint64  archived_size <bgcolor=CLR_INFO>;
+    uint16  name_len      <bgcolor=CLR_INFO, comment="Number of UTF-16LE chars">;
+    wchar_t name[name_len]<bgcolor=CLR_INFO, comment="Entry filename (UTF-16LE)">;
+} INFO_BODY;
+
+// ---- segm record (fixed 28 bytes each) ----
+typedef struct {
+    uint32 flags          <bgcolor=CLR_SEGM, comment="bit0=zlib compressed">;
+    uint64 archive_offset <bgcolor=CLR_SEGM, comment="Physical offset of segment in XP3">;
+    uint64 original_size  <bgcolor=CLR_SEGM>;
+    uint64 archived_size  <bgcolor=CLR_SEGM>;
+} SEGM_RECORD;
+
+// ---- segm sub-chunk body ----
+typedef struct (uint64 body_size) {
+    local int seg_count = body_size / 28;
+    SEGM_RECORD records[seg_count] <bgcolor=CLR_SEGM>;
+} SEGM_BODY;
+
+// ---- adlr sub-chunk body ----
+typedef struct (uint64 body_size) {
+    uint32 adler32 <bgcolor=CLR_ADLR, comment="Adler-32 of plaintext file data">;
+    if (body_size > 4)
+        uchar  adlr_extra[body_size - 4] <bgcolor=CLR_ADLR, comment="Extra adlr bytes (unexpected)">;
+} ADLR_BODY;
+
+// ---- Generic unknown sub-chunk ----
+typedef struct (uint64 body_size) {
+    if (body_size > 0)
+        uchar body[body_size] <bgcolor=0xEEEEEE>;
+} UNKNOWN_SUBCHUNK_BODY;
+
+// ---- Sub-chunk wrapper ----
+typedef struct {
+    char   tag[4]      <bgcolor=CLR_FILE, comment="Sub-chunk tag">;
+    uint64 body_size   <bgcolor=CLR_FILE>;
+    if (Strcmp(tag, "info") == 0) {
+        INFO_BODY  info_body(body_size) <bgcolor=CLR_INFO>;
+    } else if (Strcmp(tag, "segm") == 0) {
+        SEGM_BODY  segm_body(body_size) <bgcolor=CLR_SEGM>;
+    } else if (Strcmp(tag, "adlr") == 0) {
+        ADLR_BODY  adlr_body(body_size) <bgcolor=CLR_ADLR>;
+    } else {
+        UNKNOWN_SUBCHUNK_BODY unknown(body_size);
+    }
+} SUB_CHUNK <read=ReadSubChunk>;
+
+string ReadSubChunk(SUB_CHUNK &c) {
+    return c.tag;
+}
+
+// ---- File chunk body ----
+typedef struct (uint64 body_size) {
+    local quad start = FTell();
+    local quad end   = start + body_size;
+    while (FTell() < end) {
+        SUB_CHUNK sc;
+    }
+} FILE_BODY;
+
+// ---- Hxv4 descriptor (14 bytes) ----
+typedef struct (uint64 body_size) {
+    uint64 payload_offset <bgcolor=CLR_HXV4, comment="Physical offset of encrypted Hxv4 payload in XP3">;
+    uint32 payload_size   <bgcolor=CLR_HXV4, comment="Encrypted payload size (incl. 16-byte Poly1305 tag)">;
+    uint16 flags          <bgcolor=CLR_HXV4, comment="bit0=open_flag (selects XChaCha20 nonce)">;
+    if (body_size > 14)
+        uchar  extra[body_size - 14] <bgcolor=CLR_HXV4>;
+} HXV4_DESC;
+
+// ---- Generic unknown top-level chunk ----
+typedef struct (uint64 body_size) {
+    if (body_size > 0)
+        uchar body[body_size] <bgcolor=0xDDDDDD>;
+} UNKNOWN_CHUNK_BODY;
+
+// ---- Top-level chunk wrapper ----
+typedef struct {
+    char   tag[4]    <bgcolor=CLR_FILE, comment="Chunk tag: File, Hxv4, ...">;
+    uint64 body_size <bgcolor=CLR_FILE>;
+    if (Strcmp(tag, "File") == 0) {
+        FILE_BODY  file_body(body_size) <bgcolor=CLR_FILE>;
+    } else if (Strcmp(tag, "Hxv4") == 0) {
+        HXV4_DESC  hxv4_desc(body_size) <bgcolor=CLR_HXV4>;
+    } else {
+        UNKNOWN_CHUNK_BODY unknown(body_size);
+    }
+} INDEX_CHUNK <read=ReadIndexChunk>;
+
+string ReadIndexChunk(INDEX_CHUNK &c) {
+    return c.tag;
+}
+
+//================================================
+// 5. Hxv4 payload (at physical offset from Hxv4 descriptor)
+//    Poly1305 tag (16 bytes) + XChaCha20 ciphertext
+//================================================
+
+typedef struct (uint32 size) {
+    uchar poly1305_tag[16]       <bgcolor=CLR_PAYLOAD, comment="Poly1305 authentication tag">;
+    if (size > 16)
+        uchar xchacha20_ctext[size - 16] <bgcolor=CLR_PAYLOAD, comment="XChaCha20 ciphertext (decrypted = uint32 uncompressed_size + zlib TJS Variant)">;
+} HXV4_PAYLOAD;
+
+//================================================
+// 6. Inline raw index (flag == 0 only)
+//================================================
+
+typedef struct (uint64 index_size) {
+    local quad start = FTell();
+    local quad end   = start + index_size;
+    while (FTell() < end) {
+        INDEX_CHUNK chunk;
+    }
+} RAW_INDEX;
+
+//================================================
+// Entry point — parse from file start
+//================================================
+
+local uint64 hxv4_payload_offset = 0;
+local uint32 hxv4_payload_size   = 0;
+local int    has_hxv4            = 0;
+local int    index_compressed    = 0;
+
+// --- Header ---
+XP3_HEADER hdr;
+
+// --- Check for game-variant extra pointer block ---
+local uint64 true_index_offset;
+
+if (hdr.index_offset == 0x17) {
+    // Game variant: extra block sits right after standard header (at offset 0x13)
+    XP3_EXTRA_PTR extra_ptr;
+    true_index_offset = extra_ptr.real_index_offset;
+} else {
+    true_index_offset = hdr.index_offset;
+}
+
+// --- Jump to index ---
+FSeek(true_index_offset);
+XP3_INDEX_HEADER idx_hdr;
+
+// --- Raw or compressed index ---
+if (idx_hdr.flag == 0) {
+    // Uncompressed: parse inline
+    RAW_INDEX raw_idx(idx_hdr.index_size) <bgcolor=CLR_INDEX>;
+} else if (idx_hdr.flag == 1) {
+    // Compressed: mark raw blob only
+    index_compressed = 1;
+    uchar compressed_index_data[idx_hdr.compressed_size] <bgcolor=CLR_INDEX,
+        comment="zlib-compressed index — decompress externally to see File/Hxv4 chunks">;
+}
+
+//================================================
+// NOTE: For compressed-index XP3 files (flag=1), the Hxv4 chunk descriptor
+// (and thus hxv4_payload_offset) is only recoverable after decompression.
+// When flag=0 the template will have located any Hxv4 chunk above and we
+// can seek to its payload.
+//
+// To handle the compressed case, manually note the Hxv4 descriptor fields
+// from the decompressed index (e.g. via Python scripts) and jump to the
+// payload offset in the hex view.
+//================================================
+
+// --- If we parsed a raw index, try to find the Hxv4 payload and annotate it ---
+// (010 Editor scripting limitation: we cannot easily extract the offset from
+//  a nested struct at parse time. Use the manual approach below if needed.)
+//
+// Manual: after parsing, find the HXV4_DESC struct in the template results,
+// read payload_offset and payload_size, then in the hex view:
+//   Navigator → Go To Offset → <payload_offset>
+// and interpret the bytes as HXV4_PAYLOAD.

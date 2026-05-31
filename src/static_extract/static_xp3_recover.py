@@ -17,7 +17,6 @@ from static_extract.bres_bootstrap import (
     DEFAULT_BOOTSTRAP_RESOURCE,
     DEFAULT_BOOTSTRAP_ZLIB_OFFSET,
     DEFAULT_PLUGIN_RESOURCE,
-    DEFAULT_SALT_RVA,
     DEFAULT_STARTUP_RESOURCE,
     DEFAULT_TABLE_RVA,
     DEFAULT_TEXT_RESOURCE,
@@ -27,6 +26,7 @@ from static_extract.bres_bootstrap import (
     derive_drip_program,
     find_bootstrap_prefix,
     find_bootstrap_url,
+    iter_auto_salt_candidates,
     load_salt,
     parse_config_table,
     parse_int,
@@ -34,6 +34,7 @@ from static_extract.bres_bootstrap import (
     parse_tjs_strings,
     require_config,
     run_xp3_action,
+    salt_args_are_explicit,
     write_file,
 )
 
@@ -65,8 +66,7 @@ def build_parser(repo_root: Path) -> argparse.ArgumentParser:
     parser.add_argument(
         "--salt-rva",
         type=parse_int,
-        default=DEFAULT_SALT_RVA,
-        help="read salt from this PE RVA in the salt source; default matches known samples in this family",
+        help="explicitly read salt from this PE RVA in the salt source",
     )
     parser.add_argument(
         "--salt-file-offset",
@@ -150,7 +150,19 @@ def main(argv: list[str] | None = None) -> int:
     startup_key = decode_bres_root(text_resource)
     startup_plain = decrypt_bres(startup_cipher, startup_key, salt)
     if startup_plain[:8] != b"TJS2100\0":
-        raise ValueError("STARTUP.TJS did not decrypt to TJS2100")
+        if salt_args_are_explicit(args):
+            raise ValueError("STARTUP.TJS did not decrypt to TJS2100")
+        salt_source_path = args.salt_source_exe or args.exe
+        for candidate in iter_auto_salt_candidates(PeImage(salt_source_path)):
+            candidate_plain = decrypt_bres(startup_cipher, startup_key, candidate.salt)
+            if candidate_plain[:8] == b"TJS2100\0":
+                salt = candidate.salt
+                salt_source = candidate.source_label(salt_source_path)
+                startup_plain = candidate_plain
+                debug(args, f"auto salt matched: {salt_source}")
+                break
+        else:
+            raise ValueError("STARTUP.TJS did not decrypt to TJS2100")
     debug(args, f"STARTUP.TJS decrypted bytes={len(startup_plain)}")
 
     strings = parse_tjs_strings(startup_plain)

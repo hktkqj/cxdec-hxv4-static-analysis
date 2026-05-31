@@ -4,13 +4,13 @@ import argparse
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
-from common.pe_image import PeImage, read_file_offset, u16
+from common.pe_image import PeImage, read_file_offset, u16, u32
 from common.tjs2_inspect import parse_chunks, parse_data_chunk
 
 
-DEFAULT_SALT_RVA = 0x2E4A00
 DEFAULT_TABLE_RVA = 0x80E38
 DEFAULT_DOTNET_X86 = Path(r"C:\Program Files (x86)\dotnet\dotnet.exe")
 DEFAULT_STARTUP_RESOURCE = (10, "STARTUP.TJS")
@@ -19,6 +19,41 @@ DEFAULT_TEXT_RESOURCE = ("TEXT", 127)
 DEFAULT_PLUGIN_RESOURCE = (10, "PLUGIN")
 DEFAULT_BOOTSTRAP_ZLIB_OFFSET = 8
 SALT_SIZE = 0x2000
+
+
+@dataclass(frozen=True)
+class SaltCandidate:
+    kind: str
+    salt_offset: int
+    salt: bytes
+    salt_rva: int | None = None
+    salt_va: int | None = None
+    code_rva: int | None = None
+    ptr_global_va: int | None = None
+    size_global_va: int | None = None
+    anchor_offset: int | None = None
+    anchor_rva: int | None = None
+    anchor_name: str | None = None
+
+    def source_label(self, path: Path) -> str:
+        salt_parts = []
+        if self.salt_va is not None:
+            salt_parts.append(f"VA 0x{self.salt_va:x}")
+        if self.salt_rva is not None:
+            salt_parts.append(f"RVA 0x{self.salt_rva:x}")
+        salt_parts.append(f"file offset 0x{self.salt_offset:x}")
+        salt_desc = " / ".join(salt_parts)
+
+        if self.kind == "code_assignment":
+            code = f"code RVA 0x{self.code_rva:x}" if self.code_rva is not None else "code assignment"
+            return f"{path}:auto {code} salt {salt_desc}"
+
+        anchor = self.anchor_name or "packed-neighborhood"
+        if self.anchor_rva is not None:
+            return f"{path}:auto {anchor} anchor RVA 0x{self.anchor_rva:x} salt {salt_desc}"
+        if self.anchor_offset is not None:
+            return f"{path}:auto {anchor} anchor file offset 0x{self.anchor_offset:x} salt {salt_desc}"
+        return f"{path}:auto {anchor} salt {salt_desc}"
 
 
 def write_file(path: Path, data: bytes) -> None:
@@ -44,13 +79,183 @@ def parse_resource_ref(value: str) -> tuple[object, object]:
     return parse_resource_component(parts[0]), parse_resource_component(parts[1])
 
 
+def salt_args_are_explicit(args: argparse.Namespace) -> bool:
+    return (
+        args.salt_file is not None
+        or args.salt_file_offset is not None
+        or args.salt_rva is not None
+    )
+
+
+def _offset_location(image: PeImage, offset: int) -> tuple[int | None, int | None]:
+    try:
+        rva = image.offset_to_rva(offset)
+    except ValueError:
+        return None, None
+    return rva, image.image_base + rva
+
+
+def _make_salt_candidate(
+    image: PeImage,
+    *,
+    kind: str,
+    salt_offset: int,
+    seen: set[int],
+    code_rva: int | None = None,
+    ptr_global_va: int | None = None,
+    size_global_va: int | None = None,
+    anchor_offset: int | None = None,
+    anchor_name: str | None = None,
+) -> SaltCandidate | None:
+    if salt_offset in seen or salt_offset < 0 or salt_offset + SALT_SIZE > len(image.data):
+        return None
+    salt_rva, salt_va = _offset_location(image, salt_offset)
+    if salt_rva is None:
+        return None
+    anchor_rva = None
+    if anchor_offset is not None:
+        anchor_rva, _ = _offset_location(image, anchor_offset)
+    seen.add(salt_offset)
+    return SaltCandidate(
+        kind=kind,
+        salt_offset=salt_offset,
+        salt_rva=salt_rva,
+        salt_va=salt_va,
+        salt=image.data[salt_offset : salt_offset + SALT_SIZE],
+        code_rva=code_rva,
+        ptr_global_va=ptr_global_va,
+        size_global_va=size_global_va,
+        anchor_offset=anchor_offset,
+        anchor_rva=anchor_rva,
+        anchor_name=anchor_name,
+    )
+
+
+def iter_salt_assignment_candidates(image: PeImage) -> list[SaltCandidate]:
+    """Find x86 static assignments of the bres salt pointer and 0x2000 size.
+
+    Known samples initialize the bres salt globals with adjacent instructions:
+
+        mov dword ptr [salt_ptr_global], offset salt_bytes
+        mov dword ptr [salt_size_global], 2000h
+
+    The global addresses move between games, but the immediate 0x2000 length
+    and the PE-mapped salt pointer make a compact, verifiable signature.
+    """
+
+    data = image.data
+    seen: set[int] = set()
+    candidates: list[SaltCandidate] = []
+    for off in range(0, max(0, len(data) - 20)):
+        if data[off : off + 2] != b"\xC7\x05":
+            continue
+        ptr_global_va = u32(data, off + 2)
+        salt_va = u32(data, off + 6)
+        if salt_va < image.image_base:
+            continue
+        salt_rva = image.va_to_rva(salt_va)
+        try:
+            salt_offset = image.rva_to_offset(salt_rva)
+        except ValueError:
+            continue
+        if salt_offset + SALT_SIZE > len(data):
+            continue
+        window_end = min(len(data) - 10, off + 64)
+        for size_off in range(off + 10, window_end):
+            if data[size_off : size_off + 2] != b"\xC7\x05":
+                continue
+            if u32(data, size_off + 6) != SALT_SIZE:
+                continue
+            if salt_offset in seen:
+                break
+            try:
+                code_rva = image.offset_to_rva(off)
+            except ValueError:
+                code_rva = off
+            candidate = _make_salt_candidate(
+                image,
+                kind="code_assignment",
+                salt_offset=salt_offset,
+                seen=seen,
+                code_rva=code_rva,
+                ptr_global_va=ptr_global_va,
+                size_global_va=u32(data, size_off + 2),
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+            break
+    return candidates
+
+
+def iter_packed_neighborhood_salt_candidates(image: PeImage) -> list[SaltCandidate]:
+    """Find packed samples where the salt has no code xrefs in the original EXE.
+
+    Sanoba/CafeStella packed images keep the 0x2000-byte salt in .rdata near:
+
+        UTF-16 "TEXT", UTF-16 "yes", ASCII "forcedataxp3", UTF-16 "no"
+
+    In these samples the salt often starts shortly after the marker cluster and
+    ends immediately before an ASCII "V2Link" string.  Candidates from this
+    heuristic are intentionally verified later by decrypting STARTUP.TJS.
+    """
+
+    data = image.data
+    seen: set[int] = set()
+    candidates: list[SaltCandidate] = []
+
+    def add(offset: int, anchor_offset: int, anchor_name: str) -> None:
+        candidate = _make_salt_candidate(
+            image,
+            kind="packed_neighborhood",
+            salt_offset=offset,
+            seen=seen,
+            anchor_offset=anchor_offset,
+            anchor_name=anchor_name,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+
+    marker = b"V2Link\x00\x00"
+    cursor = 0
+    while True:
+        anchor = data.find(marker, cursor)
+        if anchor < 0:
+            break
+        add(anchor - SALT_SIZE, anchor, "V2Link-before")
+        cursor = anchor + 1
+
+    marker = b"forcedataxp3\x00"
+    cursor = 0
+    while True:
+        anchor = data.find(marker, cursor)
+        if anchor < 0:
+            break
+        window_start = (anchor + len(marker) + 0xF) & ~0xF
+        window_end = min(anchor + 0x100, len(data) - SALT_SIZE)
+        for offset in range(window_start, window_end + 1, 0x10):
+            add(offset, anchor, "forcedataxp3-near")
+        cursor = anchor + 1
+
+    return candidates
+
+
+def iter_auto_salt_candidates(image: PeImage) -> list[SaltCandidate]:
+    seen_offsets: set[int] = set()
+    candidates: list[SaltCandidate] = []
+    for candidate in [
+        *iter_salt_assignment_candidates(image),
+        *iter_packed_neighborhood_salt_candidates(image),
+    ]:
+        if candidate.salt_offset in seen_offsets:
+            continue
+        seen_offsets.add(candidate.salt_offset)
+        candidates.append(candidate)
+    return candidates
+
+
 def load_salt(args: argparse.Namespace) -> tuple[bytes, str]:
     explicit_salt_file = args.salt_file is not None
-    explicit_salt_source = (
-        args.salt_source_exe is not None
-        or args.salt_file_offset is not None
-        or args.salt_rva != DEFAULT_SALT_RVA
-    )
+    explicit_salt_source = args.salt_file_offset is not None or args.salt_rva is not None
 
     if explicit_salt_file:
         salt_path = args.salt_file
@@ -66,8 +271,17 @@ def load_salt(args: argparse.Namespace) -> tuple[bytes, str]:
             salt = salt_image.read_rva(args.salt_rva, SALT_SIZE)
             salt_source = f"{salt_source_path}:RVA 0x{args.salt_rva:x}"
     else:
-        salt = PeImage(args.exe).read_rva(args.salt_rva, SALT_SIZE)
-        salt_source = f"{args.exe}:RVA 0x{args.salt_rva:x}"
+        salt_source_path = args.salt_source_exe or args.exe
+        salt_image = PeImage(salt_source_path)
+        candidates = iter_auto_salt_candidates(salt_image)
+        if not candidates:
+            raise ValueError(
+                "could not locate bres salt from code assignments or packed data-neighborhood; "
+                "pass --salt-rva, --salt-file-offset, or --salt-file"
+            )
+        candidate = candidates[0]
+        salt = candidate.salt
+        salt_source = candidate.source_label(salt_source_path)
 
     if len(salt) != SALT_SIZE:
         raise ValueError(f"{salt_source} is {len(salt)} bytes; expected {SALT_SIZE}")

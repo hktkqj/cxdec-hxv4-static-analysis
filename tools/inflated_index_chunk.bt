@@ -1,0 +1,159 @@
+//------------------------------------------------
+// 010 Editor Binary Template
+// File:    hxv4_table.bt
+// Purpose: Parse a decompressed XP3 index blob (e.g. output.hxv4)
+//
+// 适用对象
+// --------
+//   XP3 index 解压缩后的原始 blob，以 "Hxv4" 块开头，后跟若干 "File" 块。
+//   对应 Python 提取命令：
+//
+//     from src.common.xp3_inspect import load_index
+//     _, _, _, idx = load_index(open("data.xp3", "rb").read())
+//     open("output.hxv4", "wb").write(idx)
+//
+//   在 010 Editor 中打开该文件，运行此模板即可。
+//
+// 字节序
+// ------
+//   Little-Endian（XP3 格式）。
+//
+// 文件名说明
+// ----------
+//   游戏使用单个无意义 Unicode 码位（U+5000, U+5001, …）作为文件名，
+//   以 UTF-16 LE 存储（2 字节/字符）。模板注释以 "U+XXXX" 形式展示码位。
+//
+// 布局
+// ----
+//   [Hxv4 chunk]      26 字节  descriptor → 加密 payload 在 XP3 档案中的位置
+//   [File chunk] × N           每个文件对应一条，含三个子块：
+//                                 adlr — Adler-32 校验值
+//                                 segm — 分段描述（偏移 / 大小 / 压缩标志）
+//                                 info — 文件元数据（大小 / flags / 文件名）
+//------------------------------------------------
+
+LittleEndian();
+
+//------------------------------------------------
+// 颜色
+//------------------------------------------------
+local uint32 CLR_HEADER = 0xA8D8EA;   // 淡蓝  — Hxv4 descriptor
+local uint32 CLR_FILE   = 0xD5ECC2;   // 淡绿  — File chunk 头
+local uint32 CLR_ADLR   = 0xE8D5F5;   // 薰衣草 — adlr
+local uint32 CLR_SEGM   = 0xFFE8D6;   // 桃色  — segm
+local uint32 CLR_INFO   = 0xD6EAF8;   // 淡天蓝 — info
+
+//================================================
+// Hxv4 顶层块（固定 26 字节）
+//   tag(4) + body_size(8) + payload_offset(8) + payload_size(4) + flags(2)
+//================================================
+typedef struct {
+    char   tag[4]         <bgcolor=CLR_HEADER, comment="'Hxv4'">;
+    uint64 body_size      <bgcolor=CLR_HEADER, comment="固定为 14">;
+    uint64 payload_offset <bgcolor=CLR_HEADER,
+                           comment="加密 payload 在 XP3 档案中的绝对偏移">;
+    uint32 payload_size   <bgcolor=CLR_HEADER,
+                           comment="加密 payload 长度（含 16B Poly1305 tag）">;
+    uint16 flags          <bgcolor=CLR_HEADER,
+                           comment="bit0 = open_flag / nonce 选择（非 filter_flag！）">;
+    if (body_size > 14)
+        uchar extra[body_size - 14] <bgcolor=CLR_HEADER, comment="额外字节">;
+} HXV4_CHUNK <comment=Str("payload@0x%LX  size=0x%X  flags=%d",
+                            payload_offset, payload_size, flags)>;
+
+//================================================
+// adlr 子块 body（4 字节 Adler-32）
+//================================================
+typedef struct (uint64 body_size) {
+    uint32 adler32 <bgcolor=CLR_ADLR, format=hex>;
+    if (body_size > 4)
+        uchar extra[body_size - 4] <bgcolor=CLR_ADLR>;
+} ADLR_BODY <comment=Str("0x%08X", adler32)>;
+
+//================================================
+// segm 子块 body（每条分段记录固定 28 字节）
+//================================================
+typedef struct {
+    uint32 flags          <bgcolor=CLR_SEGM, comment="bit0=zlib 压缩">;
+    uint64 archive_offset <bgcolor=CLR_SEGM, comment="在 XP3 档案中的绝对偏移">;
+    uint64 original_size  <bgcolor=CLR_SEGM, comment="解压后大小">;
+    uint64 archived_size  <bgcolor=CLR_SEGM, comment="存档中大小">;
+} SEGM_RECORD <comment=Str("@0x%LX  orig=%Lu  arch=%Lu",
+                             archive_offset, original_size, archived_size)>;
+
+typedef struct (uint64 body_size) {
+    local int32 _n = (int32)(body_size / 28);
+    SEGM_RECORD records[_n] <optimize=false>;
+} SEGM_BODY <comment=Str("%d segment(s)", _n)>;
+
+//================================================
+// info 子块 body
+//   flags(4) + orig_size(8) + arch_size(8) + name_len(2) + name(name_len×2) + padding
+//
+//   文件名为单个无意义 Unicode 码位（U+5000 起），以 "U+XXXX" 形式注释。
+//   flags bit31 = 0x80000000 表示文件需要 filter 解密。
+//================================================
+typedef struct (uint64 body_size) {
+    uint32 flags     <bgcolor=CLR_INFO,
+                      comment="bit31=0x80000000 → 需要 filter 解密">;
+    uint64 orig_size <bgcolor=CLR_INFO, comment="原始大小">;
+    uint64 arch_size <bgcolor=CLR_INFO, comment="存档大小">;
+    uint16 name_len  <bgcolor=CLR_INFO, comment="UTF-16 字符数（通常为 1）">;
+    uint16 name_chars[name_len] <bgcolor=CLR_INFO,
+                                 comment="UTF-16 LE 码位（无意义 Unicode）">;
+
+    // 格式化码位为 "U+XXXX" 字符串，用作注释
+    local string _nc = "";
+    local int    _i;
+    for (_i = 0; _i < name_len; _i++)
+        _nc += Str("U+%04X", name_chars[_i]);
+
+    local uint64 _consumed = 4 + 8 + 8 + 2 + (uint64)name_len * 2;
+    if (body_size > _consumed)
+        uchar padding[body_size - _consumed] <bgcolor=CLR_INFO,
+                                              comment="对齐填充">;
+} INFO_BODY <comment=_nc>;
+
+//================================================
+// 子块派发（adlr / segm / info / 未知）
+//================================================
+typedef struct {
+    char   tag[4]    <bgcolor=CLR_FILE>;
+    uint64 body_size <bgcolor=CLR_FILE>;
+    if (tag == "adlr")
+        ADLR_BODY body(body_size);
+    else if (tag == "segm")
+        SEGM_BODY body(body_size);
+    else if (tag == "info")
+        INFO_BODY body(body_size);
+    else
+        uchar body[body_size] <bgcolor=CLR_FILE, comment="未知子块">;
+} SUB_CHUNK <comment=tag>;
+
+//================================================
+// File chunk body（循环读子块直到 body 消耗完毕）
+//================================================
+typedef struct (uint64 body_size) {
+    local quad _start = FTell();
+    while (FTell() - _start < (quad)body_size)
+        SUB_CHUNK sub <optimize=false>;
+} FILE_BODY;
+
+//================================================
+// 顶层块派发（File / 未知）
+//================================================
+typedef struct {
+    char   tag[4]    <bgcolor=CLR_FILE>;
+    uint64 body_size <bgcolor=CLR_FILE>;
+    if (tag == "File")
+        FILE_BODY body(body_size);
+    else
+        uchar body[body_size] <bgcolor=CLR_FILE, comment="未知顶层块">;
+} INDEX_CHUNK <comment=tag>;
+
+//================================================
+// 入口
+//================================================
+HXV4_CHUNK hxv4;
+while (!FEof())
+    INDEX_CHUNK chunk <optimize=false>;

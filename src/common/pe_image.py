@@ -35,6 +35,12 @@ class PeImage:
         optional_size = u16(self.data, coff + 16)
         optional = coff + 20
         magic = u16(self.data, optional)
+        if magic == 0x10B:
+            self.image_base = u32(self.data, optional + 28)
+        elif magic == 0x20B:
+            self.image_base = struct.unpack_from("<Q", self.data, optional + 24)[0]
+        else:
+            raise ValueError(f"{path} has unsupported PE optional header magic 0x{magic:x}")
         data_dir = optional + (96 if magic == 0x10B else 112)
         self.resource_rva = u32(self.data, data_dir + 2 * 8)
         self.resource_size = u32(self.data, data_dir + 2 * 8 + 4)
@@ -55,6 +61,15 @@ class PeImage:
             if section.va <= rva < section.va + section.size:
                 return section.raw + (rva - section.va)
         raise ValueError(f"RVA 0x{rva:x} is not mapped in {self.path}")
+
+    def offset_to_rva(self, offset: int) -> int:
+        for section in self.sections:
+            if section.raw <= offset < section.raw + section.raw_size:
+                return section.va + (offset - section.raw)
+        raise ValueError(f"file offset 0x{offset:x} is not mapped in {self.path}")
+
+    def va_to_rva(self, va: int) -> int:
+        return va - self.image_base
 
     def read_rva(self, rva: int, size: int) -> bytes:
         off = self.rva_to_offset(rva)
