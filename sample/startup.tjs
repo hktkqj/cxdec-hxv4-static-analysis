@@ -1,0 +1,218 @@
+// Decompiled STARTUP.TJS with light variable renaming and analysis notes.
+// The names are not original symbols; they are assigned only to explain how
+// System.bootStrap, CompoundStorageMedia, pathHash, and archive mounting relate.
+function _bootStrap(bootstrapPrefix, startupStorage) {
+
+    function linkfail(badModuleName) {
+        var triggerArgs = [];
+        var trigger = new global.AsyncTrigger(function() {
+            delete global.Plugins[this[0]];
+            invalidate(this[1]);
+            var ex = new Exception(this[2]);
+            &ex.disable_recovery = 1;
+            throw ex;
+        } incontextof triggerArgs, "");
+        var triggerName = string(trigger);
+        &global.Plugins[triggerName] = trigger;
+        triggerArgs.push(triggerName, trigger, "Malformed exe/dll detected: " + badModuleName);
+        trigger.cached = 1;
+        trigger.mode = atmExclusive;
+        trigger.trigger();
+    }
+
+    function autopath(archivePath, domainPath, mounting) {
+        var domainHash;
+        var mountedDomainIndex;
+        if (archivePath == "") {
+            return 0;
+        }
+
+        var fullArchivePath;
+        if (archivePath != ">") {
+            fullArchivePath = getFullPath(archivePath.toLowerCase());
+            if (!isExistentStorageNoSearchNoNormalize(fullArchivePath)) {
+                return 0;
+            }
+        }
+
+        function _() { }
+        var notice = global.Debug.notice;
+        var compoundMedia;
+        var archiveDomainMap;
+        var mountedPairs;
+        compoundMedia = _.fs;
+        archiveDomainMap = _.map;
+        mountedPairs = _.pairs;
+        if (!compoundMedia || !archiveDomainMap) {
+            return 0;
+        }
+
+        var domainId = (fullArchivePath != "") ? archiveDomainMap[fullArchivePath] : _.inidom;
+        var isInitialDomain = 0;
+        if (domainId === void && mounting) {
+            var archiveIndex = parseArchiveIndex(fullArchivePath);
+            if (archiveIndex instanceof "Array") {
+                mountedDomainIndex = compoundMedia.mount(fullArchivePath, archiveIndex);
+                domainId = archiveDomainMap[fullArchivePath] = "%d".sprintf(mountedDomainIndex);
+                notice("mount domain %s: %s".sprintf(domainId, fullArchivePath));
+                compoundMedia.entryDomain(domainId, archiveIndex);
+                if (!mountedDomainIndex) {
+                    _.inidom = domainId;
+                    isInitialDomain = 1;
+                }
+            } else {
+                domainId = archiveDomainMap[fullArchivePath] = "";
+                notice("failed to mount: " + fullArchivePath);
+            }
+        }
+
+        if (domainId == "") {
+            return 1;
+        }
+
+        // Hxv4 domain lookup key:
+        //   domainHash = pathHash(domainPath.toLowerCase(), extra=mediaName)
+        // mediaName is saved in CompoundStorageMedia by the constructor below.
+        domainHash = compoundMedia.pathHash((string(domainPath)).toLowerCase());
+
+        if (mounting) {
+            if (isInitialDomain) {
+                // Initial archive domain. In this boot script domainPath is "",
+                // so pathHash("", extra="xp3hnp") maps to Hxv4 domain_hash.
+                compoundMedia.assignDomain(domainId, _.zdom);
+            } else {
+                // Non-root mounted archive: assign only files matching this domain hash.
+                compoundMedia.assignFiles(domainId, domainHash, _.zdom, _.zpath);
+            }
+            if (mountedPairs) {
+                mountedPairs.add([domainId, domainHash]);
+            }
+        } else {
+            compoundMedia.clearDomain(rootDomain_);
+            compoundMedia.assignDomain(_.inidom, _.zdom);
+            if (mountedPairs) {
+                var pairs = mountedPairs;
+                var pairIndex = 0;
+                var pairCount = pairs.count;
+                for (; pairIndex < pairCount; pairIndex += 2) {
+                    var pair = pairs[pairIndex];
+                    if (pair[0] == domainId && pair[1] === domainHash) {
+                        pairs[pairIndex] = void;
+                        continue;
+                    } else {
+                        compoundMedia.assignFiles(pair[0], pair[1], _.zdom, _.zpath);
+                    }
+                }
+                pairs.remove(, 1);
+            }
+        }
+        return 1;
+    }
+
+    var bootResultStorage;
+    var failWithCorruption = linkfail;
+    var autoPath = autopath;
+    &Plugins.onCorrupted = failWithCorruption;
+    var dataArchivePath = System.exePath + "data.xp3";
+    var placedStartupPath;
+    try {
+        var autoPathCallback = autoPath incontextof Storages;
+        &autoPathCallback._.fs = void;
+        &autoPathCallback._.inidom = void;
+        &autoPathCallback._.zdom = ".";
+        &autoPathCallback._.zpath = void;
+        &autoPathCallback._.pairs = [];
+        &autoPathCallback._.map = new Dictionary(256);
+
+        // System.bootStrap returns a 32-byte octet. It is passed to
+        // CompoundStorageMedia as the third constructor argument. The DLL copies
+        // it into hasher objects, but key_len remains 0 in this build; see
+        // docs/core/Hxv4Ripped.md section 9.
+        var hashKeyOctet = System.bootStrap(bootstrapPrefix, autoPathCallback);
+
+        var bootstrapParts = (string(bootstrapPrefix)).split(":");
+        var mediaName = (bootstrapParts.count > 1) ? bootstrapParts[0] : "xp3hnp";
+
+        // Constructor arguments:
+        //   "arc"       : registered storage media name used by arc://./
+        //   mediaName   : appended as extra string in pathHash/fileHash
+        //   hashKeyOctet: System.bootStrap return value
+        var compoundMedia = autoPathCallback._.fs =
+            new Storages.CompoundStorageMedia("arc", mediaName, hashKeyOctet);
+
+        // Zero-domain path hash. For Sanoba:
+        //   pathHash("", extra="xp3hnp") = 94d4a97c61498621
+        autoPathCallback._.zpath = compoundMedia.pathHash("");
+
+        placedStartupPath = (startupStorage != "") ? Storages.getPlacedPath(startupStorage) : void;
+        Storages.setDefaultPath("arc://./");
+
+        &Storages.setupArchiveData = function(arg0) {
+            global.Storages.archiveUniqueKey = arg0;
+            delete global.Storages.archiveUniqueKey;
+            var callback = this.shift();
+            if (!callback(this*)) {
+                throw new Exception("boot strap failed.");
+            }
+            delete global.Storages.setupArchiveData;
+        } incontextof [autoPathCallback, dataArchivePath, "", 1];
+
+        if (placedStartupPath == "") {
+            Storages.setupArchiveData(Storages.archiveUniqueKey);
+        }
+
+        var exeName = System.exeName;
+        var extraSignatureStorage = void;
+        var moviePlugin = "krmovie.dll";
+        function extrasig(pluginName) {
+            var exeBitsSuffix = (typeof System.exeBits != "undefined" && System.exeBits == 64) ? "64" : "";
+            var pluginPath = System.exePath + "plugin%s/%s".sprintf(exeBitsSuffix, pluginName);
+            var bresList = [];
+            try {
+                bresList.load("bres://./plugin");
+            } catch (e) { }
+            bresList = bresList[0];
+            if (bresList != "") {
+                var bresDomain = Storages.mountBRes(pluginPath, 1);
+                if (bresDomain >= 0) {
+                    return ["bres://%d/%s/bin".sprintf(bresDomain, bresList), pluginPath];
+                }
+            }
+        }
+
+        if (Storages.extractStorageExt(exeName) != ".exe") {
+            extraSignatureStorage = extrasig(moviePlugin);
+            if (!System.checkSignature(exeName, extraSignatureStorage ? extraSignatureStorage[0] : void)) {
+                failWithCorruption(Storages.extractStorageName(exeName));
+            }
+            exeName = Storages.chopStorageExt(exeName) + ".exe";
+        }
+        if (!System.checkSignature(exeName)) {
+            failWithCorruption(Storages.extractStorageName(exeName));
+        }
+        if (extraSignatureStorage) {
+            Storages.mountBRes(extraSignatureStorage[1], 0);
+        }
+        Plugins.link(moviePlugin);
+    } catch (e) {
+        if (typeof e == "Object" && typeof e.message == "String") {
+            Debug.notice(e.message);
+        }
+        if (typeof autoPath._.fs == "Object") {
+            invalidate(autoPath._.fs);
+            autoPath._.fs = void;
+        }
+        Storages.setDefaultPath(dataArchivePath + ">");
+    }
+    bootResultStorage = (placedStartupPath != "") ? placedStartupPath : "startup.tjs";
+    delete global._bootStrap;
+    return bootResultStorage;
+}
+
+this._bootStrap = _bootStrap incontextof this;
+Storages.setDefaultPath(System.exePath + "data.xp3>");
+Plugins.linkZ("bres://./xuf2b4we2c5y8mi44vwhm6tqee/bootstrap");
+
+Scripts.execStorage((typeof global._bootStrap == "Object") ? _bootStrap(
+    "Sabbat_of_the_Witch (C)YUZUSOFT/JUNOS INC. All Rights Reserved.", ""
+) : "startup.tjs");

@@ -13,6 +13,7 @@ internal static class Program
     private const int ArchiveSeedRva = 0x81758;
 
     private const int RvaManagerCtor = 0x0E2D0;
+    private const int RvaHashKeyDerive = 0x10410;
     private const int RvaBootstrapDerive = 0x15630;
     private const int RvaArchiveDerive = 0x157D0;
 
@@ -42,6 +43,14 @@ internal static class Program
         nint archiveNameBytes,
         nuint archiveNameSize,
         nint seedBytes);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void HashKeyDerive(
+        nint outBytes,
+        nuint outSize,
+        nint dataBytes,
+        nuint dataSize,
+        int seed);
 
     private static int Main(string[] argv)
     {
@@ -115,6 +124,8 @@ internal static class Program
                 }
             }));
 
+            var hashKey = DeriveHashKey(module, manager);
+
             if (archiveNameBytes is not null)
             {
                 WithPinned(archiveNameBytes, archivePtr =>
@@ -128,7 +139,7 @@ internal static class Program
                 }));
             }
 
-            var payload = BuildPayload(module, dllPath, manager);
+            var payload = BuildPayload(module, dllPath, manager, hashKey);
             var options = new JsonSerializerOptions
             {
                 WriteIndented = true,
@@ -173,7 +184,7 @@ internal static class Program
         return Encoding.Unicode.GetBytes(prefix + (suffix ?? ""));
     }
 
-    private static Payload BuildPayload(nint module, string dllPath, nint manager)
+    private static Payload BuildPayload(nint module, string dllPath, nint manager, byte[] hashKey)
     {
         var managerVa = (uint)manager;
         var dripImpl = ReadU32(manager + DripHolderOffset);
@@ -231,12 +242,33 @@ internal static class Program
             Hxv4Key = ToHex(ReadBytes(manager + DripHolderOffset + 0x3038, 32)),
             Hxv4Nonce0 = ToHex(ReadBytes(manager + DripHolderOffset + 0x3078, 24)),
             Hxv4Nonce1 = ToHex(ReadBytes(manager + DripHolderOffset + 0x3058, 24)),
+            HashKey = ToHex(hashKey),
             HolderWords = ReadU32List(manager + DripHolderOffset, 6),
             ContextVa = (uint)context,
             ContextU32 = ReadU32List(context, contextSize / 4),
             CallbackRvaBase = (uint)module,
             Lanes = lanes,
         };
+    }
+
+    private static byte[] DeriveHashKey(nint module, nint manager)
+    {
+        var outBytes = new byte[32];
+        if ((ReadU32(manager + 0x30A0) & 3) != 3)
+        {
+            return outBytes;
+        }
+
+        WithPinned(outBytes, outPtr =>
+        {
+            GetDelegate<HashKeyDerive>(module, RvaHashKeyDerive)(
+                outPtr,
+                (nuint)outBytes.Length,
+                manager + 0x3040,
+                0x40,
+                -1);
+        });
+        return outBytes;
     }
 
     private static Dictionary<string, byte[]> ReadConfigTable(nint ptr)
@@ -505,6 +537,8 @@ internal static class Program
         public string Hxv4Nonce0 { get; set; } = "";
         [JsonPropertyName("hxv4_nonce1")]
         public string Hxv4Nonce1 { get; set; } = "";
+        [JsonPropertyName("hash_key")]
+        public string HashKey { get; set; } = "";
         [JsonPropertyName("holder_words")]
         public List<uint> HolderWords { get; set; } = [];
         [JsonPropertyName("context_va")]

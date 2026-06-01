@@ -471,27 +471,174 @@ HXV4_NONCES = {
 
 ---
 
-## 九、FileHash 算法逆向分析（2026-05-26）
+## 九、FileHash 算法逆向分析
 
 ### 9.1 分析目标
 
-DLL（`1ae7153ed25d.dll`）中的 `FileHashCompute_10016900` 函数。
-
-### 9.2 调用链
+本节分析 `CompoundStorageMedia` 如何把运行时逻辑资源名映射到 Hxv4 record：
 
 ```plain
-FileHashCompute_10016900   (0x10016900)
-├── sub_1000E070(32, key_ptr, key_len)     → BLAKE2s 上下文初始化（带 key）
-│   ├── sub_10014140(ctx)                  → 写入标准 SHA-256 IV（实为 BLAKE2s IV）
-│   ├── sub_10014260(ctx, param_block)     → 用 key 材料 XOR 初始状态 H0-H7
-│   └── sub_100159F0(ctx, key_padded, 64)  → 处理 64 字节 key block
-├── sub_100159F0(ctx, file_data, size)     → 主数据更新
-├── sub_100159F0(ctx, extra_utf16, len)    → 可选附加数据（文件名 UTF-16LE）
-└── sub_10016B00(out_param)                → finalize，输出 32 字节
-    └── sub_10013DF0(ctx, buf, 0x20)       → padding + 最终压缩 + 大端序输出
+逻辑 domain/path name  → pathHash  → Hxv4 record.domain_hash
+逻辑 file name         → fileHash  → Hxv4 record.file_hash
 ```
 
-### 9.3 核心算法：BLAKE2s-256（Keyed Mode）
+相关函数位于 BOOTSTRAP 解包出的随机 DLL：
+
+| 功能 | 函数 |
+| ---- | ---- |
+| `System.bootStrap` 回调 | `System_bootStrap_callback` / `0x1000EEB0` |
+| 生成 `System.bootStrap` 返回 octet | `sub_100148B0` |
+| 初始化 `CompoundStorageMedia` hashers | `sub_1000A3D0` |
+| `pathHash` TJS 方法 | `sub_10009CE0` |
+| `fileHash` TJS 方法 | `sub_10008F60` |
+| 统一调用 hasher | `sub_10005FE0` |
+| 文件名 hash trait | `FileHashCompute_10016900` |
+| 路径 hash trait | `sub_100169F0` |
+
+### 9.2 startup.tjs 中的运行时对象关系
+
+反编译后的 `Temp/sanoba_static_auto/startup.tjs` 给出了最关键的 TJS 层调用：
+
+```tjs
+var hashKeyOctet = System.bootStrap(bootstrapPrefix, autoPathCallback);
+var mediaName = (string(bootstrapPrefix)).split(":").count > 1
+    ? (string(bootstrapPrefix)).split(":")[0]
+    : "xp3hnp";
+
+var media = new Storages.CompoundStorageMedia("arc", mediaName, hashKeyOctet);
+autoPathCallback._.zpath = media.pathHash("");
+```
+
+Sanoba 的实际值为：
+
+```plain
+bootstrapPrefix = "Sabbat_of_the_Witch (C)YUZUSOFT/JUNOS INC. All Rights Reserved."
+mediaName       = "xp3hnp"
+```
+
+`System.bootStrap(...)` 返回的 32 字节 octet 仍然会传给 `CompoundStorageMedia`，但这不等价于后续 `pathHash/fileHash` 的有效 key。见 9.4。
+
+### 9.3 pathHash / fileHash 调用链
+
+TJS 方法 `pathHash` 和 `fileHash` 都会进入 `sub_10005FE0`：
+
+```plain
+sub_10009CE0(pathHash)
+  → sub_100064C0
+    → sub_10005FE0(this, out_octet, path_hasher, input_tjs_string)
+
+sub_10008F60(fileHash)
+  → sub_10005FB0
+    → sub_10005FE0(this, out_octet, file_hasher, input_tjs_string)
+```
+
+`sub_10005FE0` 会把 `CompoundStorageMedia` 构造时保存的 media name 作为 `extra` 传给 hasher：
+
+```plain
+input = TJS 方法参数
+extra = this + 0x10   # startup.tjs 中的 "xp3hnp"，若为空则不传
+
+hasher.compute(input, extra)
+```
+
+因此 hash 输入不是裸文件名，而是两个连续 update：
+
+```plain
+Update(UTF-16LE(input))
+Update(UTF-16LE(extra))    # extra="xp3hnp"
+Final()
+```
+
+字节流效果等价于：
+
+```plain
+UTF-16LE(input) || UTF-16LE("xp3hnp")
+```
+
+中间没有分隔符，也没有额外长度字段。
+
+### 9.4 hash_key 的真实作用：被复制，但 key_len 为 0
+
+此前容易误判的一点是：`System.bootStrap` 返回的 32 字节 `hash_key` 并没有作为有效 keyed hash key 使用。
+
+构造函数链路：
+
+```plain
+new CompoundStorageMedia("arc", "xp3hnp", hash_key)
+  → sub_1000A3D0(...)
+    → sub_10016890(hash_key_variant)  # PathNameHashTrait
+      → sub_10016680
+    → sub_10016820(hash_key_variant)  # FileNameHashTrait
+      → sub_10016580
+```
+
+`sub_10016680` / `sub_10016580` 的行为：
+
+```plain
+this+4 = pointer_to_internal_key_buffer
+this+8 = 0
+memmove(this+0x0c, hash_key_octet, min(len, 16 or 32))
+```
+
+也就是说，它们确实复制了 octet 字节，但没有把 `this+8` 设置成 `16` 或 `32`。后续计算时读取的是：
+
+```plain
+key_ptr = this+4
+key_len = this+8  # 实际保持 0
+```
+
+所以本作中实际 hasher 是：
+
+```plain
+pathHash = SipHash-2-4 with 16-byte zero key
+fileHash = unkeyed BLAKE2s-256
+```
+
+`hash_key` 仍然是 `System.bootStrap` 返回值，可用于确认运行时初始化流程是否正确，但它不是本作 Hxv4 lookup hash 的有效 keyed hash key。
+
+### 9.5 pathHash：domain_hash 的计算
+
+路径 hash trait 位于 `sub_100169F0`。其特征：
+
+- 初始化常数为 SipHash 标准 IV：
+  `somepseudorandomlygeneratedbytes`
+- key 长度实际为 `0`，因此使用全零 16 字节 key 初始化
+- 对输入 TJS 字符串按 UTF-16LE 字节更新
+- 若 `extra` 非空，再对 `extra` 的 UTF-16LE 字节做第二次 update
+- finalize 输出 8 字节，按小端显示为 Hxv4 `domain_hash`
+
+Python 复现：
+
+```python
+domain_hash = siphash24(
+    pathname.encode("utf-16le") + "xp3hnp".encode("utf-16le"),
+    bytes(16),
+).hex()
+```
+
+结合 `startup.tjs`，初始归档挂载时 `setupArchiveData` 的上下文是：
+
+```tjs
+incontextof [autoPathCallback, System.exePath + "data.xp3", "", 1]
+```
+
+因此初始 domain/path 参数是空字符串，而不是物理 XP3 文件名。实测：
+
+```plain
+pathHash("", extra="xp3hnp")
+= 94d4a97c61498621
+```
+
+这正好命中 `bgm.xp3` Hxv4 表中所有 record 的 `domain_hash`。而：
+
+```plain
+pathHash("bgm", extra="xp3hnp")
+= 384eb6c2e716927a
+```
+
+不会命中该表。结论：`pathname` 是 `Storages` 自动挂载逻辑传入的逻辑 domain/path，不是 XP3 文件名。
+
+### 9.6 fileHash：file_hash 的计算
 
 压缩函数 `sub_10012500` 通过以下特征确认为标准 BLAKE2s-256：
 
@@ -500,19 +647,129 @@ FileHashCompute_10016900   (0x10016900)
 - 汇编中出现 `rol ebx, 10h`（G 函数第一个旋转 = 16位），`rol ebx, 0Ch`（12位），与 BLAKE2s G 函数完全吻合
 - 64 字节消息块，32 字节输出，有 counter 和 finalization flag 字段
 
-初始化时，若有 key，使用 `sub_10014260` 将 key 材料 XOR 进 IV H0-H7，这正是 BLAKE2s keyed mode 的参数块处理方式。
+但本作 `key_len == 0`，所以 `FileHashCompute_10016900` 实际走的是 unkeyed BLAKE2s-256：
 
-### 9.4 FileHashCompute 三个关键输入参数
+```plain
+BLAKE2s_Init(digest_size=32, key_len=0)
+Update(UTF-16LE(filename))
+Update(UTF-16LE("xp3hnp"))
+Final()
+```
 
-| 参数 | 来源 | 内容说明 |
-| ------ | ------ | --------- |
-| **Key** | `this+4 / this+8`（DripValueImpl 衍生） | 32 字节 BLAKE2s key。由启动时 `System.bootStrap` 传入的密码 + 嵌入常量 `{NENeMEGURuTSUMUGiTOUKoWAKANa}` + `PARAMS` 块共同派生，无法在不知道密码的情况下独立重建 |
-| **Data** | `a2`（TJS octet 变量） | XP3 文件条目的原始内容字节，长度为 `Size` |
-| **Extra** | `a5`（可选 TJS 字符串） | 文件路径/名称的 UTF-16LE 编码（若非零则追加入哈希，贡献 `2 × char_count` 字节） |
+Python 复现：
 
-### 9.5 DLL 内嵌常量表（起始地址 0x10080e38）
+```python
+file_hash = hashlib.blake2s(
+    filename.encode("utf-16le") + "xp3hnp".encode("utf-16le"),
+    digest_size=32,
+).hexdigest()
+```
 
-`sub_10010380` 实现了一个线性扫描的 key-value 表，包含以下三项：
+注意，`filename` 必须是运行时传给 `CompoundStorageMedia.fileHash()` 的规范化逻辑文件名。裸字符串不一定可用。实测：
+
+```plain
+fileHash("bgm01", extra="xp3hnp")
+= 19ffc3f9c3848e74fe7f94850554ffa7579dbeaf7e83509703cc44c3a23f3f08
+```
+
+该值没有命中 `bgm.xp3` 的 Hxv4 表，说明真实逻辑文件名并非裸 `bgm01`。后续应通过以下方式确认：
+
+1. hook `sub_10008F60` 或 `FileHashCompute_10016900`，记录传入 TJS 字符串；
+2. 或在 TJS 层追踪 `Storages` 请求 BGM 时传入 `arc://./...` 后的规范化 storage name；
+3. 再使用同一算法计算 `file_hash`，与 Hxv4 表按 `(domain_hash, file_hash)` 二元组匹配。
+
+### 9.7 Hxv4 record 定位流程
+
+离线定位一个逻辑资源名时，按以下顺序处理：
+
+```plain
+1. 解析 XP3 index，解密并解压 Hxv4 table。
+2. 从 startup.tjs 确认 CompoundStorageMedia mediaName，本作为 "xp3hnp"。
+3. 确认运行时 domain/path：
+   - 初始 archive domain 通常是 ""；
+   - 自动挂载时使用 autopath(arg0, arg1, arg2) 中的 arg1.toLowerCase()。
+4. domain_hash = pathHash(domain_path, extra=mediaName)。
+5. 确认运行时规范化 filename。
+6. file_hash = fileHash(filename, extra=mediaName)。
+7. 在 Hxv4 records 中查找同时满足：
+   record.domain_hash == domain_hash
+   record.file_hash   == file_hash
+8. 命中 record 后：
+   - packed 低 16 位映射到 XP3 entry index；
+   - record.key 用于后续 stream filter state 派生。
+```
+
+重要区分：
+
+| 名称 | 用途 |
+| ---- | ---- |
+| `hxv4_key` / `hxv4_nonce*` | 解密 Hxv4 payload |
+| `System.bootStrap` 返回 octet / `hash_key` | 被传给 `CompoundStorageMedia`，本作中因 key_len 为 0 不作为有效 hash key |
+| `domain_hash` / `file_hash` | Hxv4 table lookup key |
+| `record.key` | 命中 record 后用于内容 stream filter 派生 |
+
+### 9.8 不同资源类型的 filename 补全规则
+
+主程序侧目前看到的 storage 打开链路是：
+
+```plain
+TJS / KAG / 资源管理器请求
+  -> TVPCreateBinaryStreamForStorageName (0xC615D0)
+  -> storage media vtable
+  -> CompoundStorageMediaFS_Open
+  -> CompoundStorageMediaFS_MapNameToFileKey
+  -> pathHash / fileHash + Hxv4 lookup
+```
+
+`TVPCreateBinaryStreamForStorageName` 和 `Scripts_execStorage_or_evalStorage_core`
+负责把已经给出的 storage name 打开为 stream；在这条主程序通用路径中没有看到
+“按资源类型统一补扩展名”的表。因此，Hxv4 中参与 `fileHash()` 的
+`filename` 应理解为：**脚本层或资源管理器完成类型补全之后，传入 storage 层的
+相对逻辑文件名**，而不是用户脚本里最初写出的裸资源名。
+
+对当前样本已确认的形式如下：
+
+| 资源类型 | 裸逻辑名示例 | 参与 `fileHash()` 的 filename | 证据 |
+| -------- | ------------ | ----------------------------- | ---- |
+| BGM 音频 | `bgm01` | `bgm01.opus` | 命中 `bgm.xp3` record 1 / XP3 entry 1 |
+| BGM loop sidecar | `bgm01` | `bgm01.opus.sli` | 命中 `bgm.xp3` record 2 / XP3 entry 2；主程序 `sub_CC6520` 解析 `.sli` 文本中的 `LoopStart=` / `LoopLength=` |
+| 背景图 | `学院_廊下モブa` | `学院_廊下モブa.png` | 命中 `bgimage.xp3` record 77 / XP3 entry 77 |
+| 启动脚本 | `startup` / 显式 storage | `startup.tjs` | `Scripts.execStorage` 直接打开完成后的 storage name |
+| 数据文件 | 显式 storage | 例如 `!cglist.csv` | 显式扩展名参与 hash |
+
+几个容易踩错的点：
+
+1. `filename` 不包含 `arc://./`、物理 XP3 路径或 archive 名；
+2. 当前已确认的 BGM / 背景图都不带 `bgm/`、`bgimage/` 这类目录前缀；
+3. `pathname` 仍来自 `startup.tjs` 的 `autopath(archivePath, domainPath, mounting)`，
+   初始自动挂载域为 `""`，所以这些命中的 `domain_hash` 是
+   `pathHash("", extra="xp3hnp") = 94d4a97c61498621`；
+4. 图像解码器本身支持 TLG/PNG/JPEG 等格式，但主程序图像解码路径只是识别并解码
+   已打开 stream，没有在当前主程序层确认到一个全局“无扩展名自动尝试
+   `.tlg/.png/.jpg`”列表；具体资源管理器若隐藏扩展名，需要继续从对应 TJS/KAG
+   脚本或运行时 hook 验证。
+
+已验证 hash 示例：
+
+```plain
+fileHash("bgm01.opus", extra="xp3hnp")
+= 0774d654ab8ff21a41fbd3acd81950ce8d6e3af115a1c01c954c34d4f7339433
+
+fileHash("bgm01.opus.sli", extra="xp3hnp")
+= 307ee30f554ffe810089261afcea357522842784c661116feb9db63ac0f88172
+
+fileHash("学院_廊下モブa.png", extra="xp3hnp")
+= ffa82b41844a4ac29f0e1b6b8fc1103c9f4a9127179cdf228386050de79e61df
+```
+
+后续定位未知类型时，应优先 hook 主程序 `TVPCreateBinaryStreamForStorageName`
+观察完成后的 storage name；若要直接看 hash 输入，则 hook BOOTSTRAP DLL 中的
+`CompoundStorageMediaFS_MapNameToFileKey` 或 `FileHashCompute_10016900`。
+离线分析时可按 archive 类型枚举候选后缀，并用 `(domain_hash, file_hash)` 反查 Hxv4。
+
+### 9.9 DLL 内嵌常量表（起始地址 0x10080e38）
+
+`sub_10010380` 实现了一个线性扫描的 key-value 表，包含以下四项：
 
 | 键 | 长度 | 内容 |
 | ---- | ------ | ------ |
@@ -521,39 +778,43 @@ FileHashCompute_10016900   (0x10016900)
 | `PUBKEY` | 248 字节 | PEM 格式 RSA-1024 公钥（`-----BEGIN PUBLIC KEY-----\nMIGJ...`） |
 | `WARNING` | 67 字节 | ASCII 警告文本（`Warning! Extracting this game da...`） |
 
-### 9.6 Key 派生流程（System_bootStrap_callback，0x1000EEB0）
+### 9.10 System.bootStrap 返回 octet 的派生流程
 
 ```plain
 TJS 脚本调用：
-  System.bootStrap(password_str, pubkey_octet, params_octet, ...)
-                     │                │               │
-                     ▼                ▼               ▼
-  v57 = password_wstr + UNIQUE宽字符串      Block = PARAMS(22B)
-  v37 = c_str(v57)                          v54 = 22
-  v39 = v57.length()
+  System.bootStrap(bootstrapPrefix, autoPathCallback)
 
-  sub_10015630(v37, 2*v39, Block, v54)
-  → sub_100141C0(ctx, 0x20, params, 22)
-    → sub_10010550(...)
-      → BLAKE2s(拼接宽字符串 + PARAMS) → 32字节 DripValue key
-  → g_FilterManager+8 存储此 key
+DLL 内：
+  final_bootstrap = bootstrapPrefix + WARNING
+  params          = PARAMS
+
+  sub_10015630(
+      manager + 8,
+      final_bootstrap_utf16le,
+      PARAMS
+  )
+
+  sub_100148B0(manager)
+    → sub_10010410(out32, 0x20, manager+0x3040, 0x40, -1)
+    → 返回 32 字节 TJS octet
 ```
 
-然后 `FileHashCompute` 从 `this+4/+8` 读取这个已派生的 32 字节 key。
+该返回 octet 当前由 `tools/FilterManagerDerive` 导出为 `hash_key`，用于调试启动链路。再次强调：本作 `pathHash/fileHash` 实际 key_len 为 0。
 
-### 9.7 与标准算法差异对比
+### 9.11 与标准算法差异对比
 
-| 特性 | 标准 SHA-256 | 标准 HMAC-SHA256 | 此实现 |
-| ------ | ------------- | ---------------- | -------- |
-| 算法基础 | SHA-256 | SHA-256 | BLAKE2s-256 |
-| Key 处理 | 无 | ipad/opad 填充 | BLAKE2s 参数块（标准 keyed） |
-| Padding | `0x80` + 消息长度 | 同 SHA-256 | BLAKE2s 标准 padding |
-| 输出大小 | 32 字节 | 32 字节 | 32 字节 |
+| 项目 | pathHash | fileHash |
+| ---- | -------- | -------- |
+| 标准算法 | SipHash-2-4 | BLAKE2s-256 |
+| 有效 key | 16 字节全零 | 无 key |
+| 主输入 | UTF-16LE pathname | UTF-16LE filename |
+| 附加输入 | UTF-16LE mediaName | UTF-16LE mediaName |
+| 输出 | 8 字节 | 32 字节 |
+| Hxv4 字段 | `domain_hash` | `file_hash` |
 
-**结论**：这是标准 BLAKE2s-256 keyed mode。可直接用 Python `hashlib.blake2s(data, key=key, digest_size=32)` 复现。复现脚本见 `analysis/blake2s_hash.py`。
+### 9.12 相关文件
 
-### 9.8 相关文件
-
-- `analysis/blake2s_hash.py`：Python 复现脚本，支持命令行和库调用
-- `plugin/PackinOne.dll.i64`、`yuzuex.dll.i64`：待确认是否也包含 FileHash 调用
+- `src/common/resource_hash.py`：Python 复现 `pathHash/fileHash`
+- `src/static_extract/compute_resource_hash.py`：从 EXE 静态恢复 bootstrap 材料并计算可选 pathname/filename hash
+- `tools/FilterManagerDerive/Program.cs`：离线加载 BOOTSTRAP DLL，导出 `hash_key` / Hxv4 key / nonce
 - DLL `1ae7153ed25d.dll.i64`：本节分析的主文件

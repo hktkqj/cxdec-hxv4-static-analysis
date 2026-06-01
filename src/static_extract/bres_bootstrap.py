@@ -383,8 +383,10 @@ def derive_drip_program(
     archive_text: str,
 ) -> None:
     tool = repo_root / "tools" / "FilterManagerDerive" / "bin" / "Debug" / "net8.0" / "FilterManagerDerive.dll"
-    if not tool.exists():
-        csproj = repo_root / "tools" / "FilterManagerDerive" / "FilterManagerDerive.csproj"
+    csproj = repo_root / "tools" / "FilterManagerDerive" / "FilterManagerDerive.csproj"
+    source_files = list(csproj.parent.glob("*.cs")) + [csproj]
+    needs_build = not tool.exists() or any(path.stat().st_mtime > tool.stat().st_mtime for path in source_files)
+    if needs_build:
         run_command(["dotnet", "build", str(csproj), "-p:PlatformTarget=x86"], repo_root)
 
     run_command(
