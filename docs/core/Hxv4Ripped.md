@@ -1,14 +1,14 @@
 # Hxv4 加密体系解析文档
 
-本文档完整描述 `SabbatOfTheWitch` 的 Hxv4 加密资源保护体系，包括映射表解密、DripValue VM 密钥派生、Stream Filter 四层 XOR 变换。
+本文档完整描述 `SabbatOfTheWitch` 的 Hxv4 加密资源保护体系。文档按 DLL 内部数据处理管线组织——从密钥初始化、映射表解密、资源定位、VM 派生、到流过滤——形成一条有向无环的分析链路。
 
 ---
 
 ## 一、Hxv4 映射表结构
 
-### 1.1 Chunk 位置
+Hxv4 是嵌入在每个 XP3 index 中的自定义顶层 chunk，其 payload 经过 XChaCha20-Poly1305 加密。解密后的内容是一个资源映射表，每条 record 将逻辑资源名（domain_hash + file_hash）绑定到一个 XP3 entry index 和一个 64-bit unique key。
 
-Hxv4 是嵌入在每个 XP3 index 中的自定义顶层 chunk：
+### 1.1 Chunk 位置
 
 ```
 XP3 Index
@@ -54,7 +54,7 @@ XP3 Index
          big-endian TJS binary Variant
 ```
 
-`HXV4_KEY` 和 `HXV4_NONCES` 从运行时 `FilterManager` 状态导出。
+`HXV4_KEY` 和 `HXV4_NONCES` 来自 FilterManager 初始化流程，其完整派生过程见[第二节](#二bootstrap-初始化与密钥派生)。
 
 ### 1.4 Record 结构
 
@@ -89,9 +89,546 @@ open_flag = Hxv4 descriptor.flags & 1   # ✓ 正确
 
 ---
 
-## 二、DripValue VM 密钥派生
+> 第一节描述了 Hxv4 映射表的结构和解密方式。解密所需的 `HXV4_KEY` 和 `HXV4_NONCES` 在游戏启动时由 `System.bootStrap()` 调用链生成。下一节将详细分析这个初始化过程。
 
-### 2.1 入口函数
+## 二、Bootstrap 初始化与密钥派生
+
+> 本节所有反编译输出来自 `mcp__ida-pro-mcp__decompile` 对 `1ae7153ed25d.dll.i64` 的实时 Hex-Rays 分析。
+
+`sub_10015630` (RVA `0x15630`) 是 FilterManager 的核心初始化派生函数。它接收两个输入——`final_bootstrap`（UTF-16LE 编码的脚本前缀 + WARNING 字符串）和 `PARAMS`（22 字节结构化配置参数）——并在 FilterManager 内部状态块中生成所有后续解密所需的密钥材料。
+
+### 2.1 入口与调用上下文
+
+```plain
+TJS 层调用:
+  System.bootStrap(bootstrapPrefix, autoPathCallback)
+
+DLL 内 System_bootStrap_callback (0x1000EEB0):
+  final_bootstrap = bootstrapPrefix + WARNING
+  PARAMS          = ConfigTable["PARAMS"]
+
+  sub_10015630(manager + 8, final_bootstrap_utf16le, PARAMS)
+    → 写入 hxv4_key、hxv4_nonce1、DripValueImpl VM 状态、holder_words、context_u32
+
+  sub_100157D0(manager + 8, UNIQUE_utf16le, archive_seed)
+    → 写入 hxv4_nonce0、更新 holder_words
+
+  sub_100148B0(manager)
+    → 返回 32 字节 TJS octet (hash_key)
+```
+
+### 2.2 FilterManager 内存布局
+
+FilterManager 总大小为 `0x30B0` 字节。所有偏移量相对于 `manager+0x08`（FilterManagerCore 起始）：
+
+```plain
+manager+0x0000  wrapper[0]          uint32 — 非空时表示已初始化
+manager+0x0004  wrapper[1]          uint32
+manager+0x0008  — FilterManagerCore (this 指针) —
+  +0x0000       drip_impl_ptr       uint32 — DripValueImpl* (独立分配，0x804 字节)
+  +0x0004       holder_words[0]     uint32
+  +0x0008       holder_words[1]     uint32
+  +0x000C       holder_words[2]     uint32
+  +0x0010       holder_words[3]     uint32
+  +0x0014       holder_words[4]     uint32
+  +0x0018       holder_words[5]     uint32
+  +0x001C..     (scratch/padding)
+  +0x0020       — Keccak 海绵状态 (0x2000 bytes, sub_10010550 管理) —
+  +0x2020       — XOR 混合状态块 (0x1000 bytes, sub_1000F620 管理) —
+  +0x3038       hxv4_key 区域 (32 bytes)  = context_u32[3078..3085]
+  +0x3058       hxv4_nonce1 区域 (32 bytes) = context_u32[3086..3093]
+  +0x3078       hxv4_nonce0 区域 (24 bytes) = context_u32[3094..3099]
+  +0x3040       hash_key 中间状态 (0x40 bytes)
+  +0x3098       派生标志 (uint32) — bit0=bootstrap完成, bit1=params完成, bit2=archive完成
+  +0x30A0..0x30A4  hash_key 完成标志 (uint32×2)
+manager+0x30B0  — 结束 —
+```
+
+### 2.3 sub_10015630 反编译
+
+```c
+char __fastcall sub_10015630(
+    int a1,                    // this = FilterManagerCore* (manager+8)
+    int a2,                    // (未使用)
+    unsigned __int8 *a3,       // bootstrap UTF-16LE 字节
+    size_t a4,                 // bootstrap 长度
+    unsigned __int8 *a5,       // PARAMS 字节
+    size_t a6)                 // PARAMS 长度
+{
+    int v15[8];                // 32-byte scratch 缓冲区
+    __int64 v16;               // 8-byte hash_key 局部变量
+
+    memset(v15, 0, sizeof(v15));  // 清零 scratch
+
+    // [1] 联合密钥派生 + DripValue 初始化
+    if (!sub_100141C0(v15, 0x20u, a3, a4, a5, a6))
+        return 0;  // 失败
+
+    // [2] seed=0: bootstrap → hxv4_key 组件 A
+    sub_10010410((void *)(a1 + 12344), 0x20u, a3, a4, 0);
+    *(a1 + 12440) |= 1u;  // bit0: bootstrap derivation done
+
+    // [3] seed=1: params → hxv4_nonce1 组件 A
+    sub_10010410((void *)(a1 + 12376), 0x20u, a5, a6, 1);
+    *(a1 + 12440) |= 2u;  // bit1: params derivation done
+
+    // [4] XOR scratch (2-of-2 秘密共享)
+    //   hxv4_key 区域 (8 dwords @ a1+12344..a1+12372)
+    *(a1 + 12344) ^= v15[0];   // +0x3038
+    *(a1 + 12348) ^= v15[1];   // +0x303C
+    *(a1 + 12352) ^= v15[2];   // +0x3040
+    *(a1 + 12356) ^= v15[3];   // +0x3044 (QWORD covers v15[3..4])
+    *(a1 + 12364) ^= v15[5];   // +0x304C
+    *(a1 + 12368) ^= v15[6];   // +0x3050
+    *(a1 + 12372) ^= v15[7];   // +0x3054
+    //   context 尾部 (8 dwords @ context[3094..3101])
+    v10[3094] ^= v15[0];
+    v10[3095] ^= v15[1];
+    v10[3096] ^= v15[2];
+    v10[3097] ^= v15[3];
+    v10[3098] ^= v15[4];
+    v10[3099] ^= v15[5];
+    v10[3100] ^= v15[6];
+    v10[3101] ^= v15[7];
+
+    // [5] hash_key 最终化
+    v16 = 0;
+    sub_10010410(&v16, 8u, (a1 + 12344), 0x40u, -1);
+    *(a1 + 12448) ^= v16;         // +0x30A0
+    *(a1 + 12452) ^= HIDWORD(v16); // +0x30A4
+    return 1;
+}
+```
+
+**关键观察**：
+- **v15[8]** 是 sub_100141C0 输出的 32-byte scratch
+- **a1+12344** = a1+0x3038（hxv4_key 区域），**a1+12376** = a1+0x3058（hxv4_nonce1 区域）
+- XOR 作用域覆盖 hxv4_key 和 hxv4_nonce1 的全部 32 bytes，同时复制到 context_u32 尾部
+
+### 2.4 调用链与密码原语
+
+**sub_100141C0** — 联合密钥派生 + DripValue 初始化：
+
+```c
+char __thiscall sub_100141C0(_QWORD *this, int a2, size_t Size,
+                              int a4, int a5, int a6, int a7)
+{
+    v8 = sub_100119D0(a6, a7);  // 验证 PARAMS (22 bytes)
+    if (v8 >= 0 && sub_10010550(a2, Size, a4, a5, a6, a7)) {
+        memmove_0(this + 1028, this + 4, 0x1000u);  // 状态块复制
+        *((_DWORD *)this + 7) = 0;
+        sub_1000F620(v8 + 1);                        // XOR 状态混洗
+        if (*this)
+            (***(void (__thiscall ****)(_DWORD, int))this)(*(_DWORD *)this, 1);
+        *this = DripValueImpl_new_seeded(
+            (int)(this + 4),                           // holder_words 区域
+            (int)(this + 1540),                        // Keccak 状态块内部偏移
+            *((_BYTE *)this + 24));                    // PARAMS[17] >> 7
+        return 1;
+    }
+    DripHolder_reset(this);
+    return 0;
+}
+```
+
+**sub_100119D0** — PARAMS 22-byte 结构解析：
+
+```plain
+PARAMS[0:8]   → 置换表前 8 bytes  (例: 04 06 02 00 07 01 03 05)
+PARAMS[8:16]  → 置换表后 8 bytes  (例: 03 00 05 04 02 01 01 02)
+PARAMS[16]    → 附加参数 byte
+PARAMS[17]    → bit0=子模式选择, bit7=flags 高位
+PARAMS[18:20] → uint16 参数1
+PARAMS[20:22] → uint16 参数2
+```
+
+**sub_10010550** — 核心 KDF：Keccak 海绵 + SHA3-512 派生：
+
+```c
+// 简化流程：
+//   sub_1000D980: 分配 0x2000 byte Keccak 海绵状态
+//   sub_10015AB0(params): 海绵吸收 PARAMS
+//   sub_10013FC0(iv, 16): 海绵挤出 16B IV → 内部调用 Keccak-f[1600]
+//   sub_1001E5E0 → sub_1001E610: SHA3-512 多流 KDF(bootstrap, IV)
+//   sub_10015AB0(sha3_out, 64): 海绵吸收 SHA3 输出
+//   sub_10013FC0(manager+0x20, 0x2000): 挤出完整海绵状态
+```
+
+**sub_10010410** — FNV-1a 混合 + BLAKE2s 哈希：
+
+```c
+int __cdecl sub_10010410(void *a1, size_t Size,
+                          unsigned __int8 *a3, size_t a4, int a5)
+{
+    memset(a1, 0, Size);
+
+    // 阶段 1: FNV-1a 键控混合
+    v6 = 16777619 * (a5 ^ 0x811C9DC5);  // FNV_PRIME * (seed ^ FNV_OFFSET)
+    for (v7 = 0; v7 < a4; ++v7) {
+        // 3-常数 MurmurHash3-style 乘法混合
+        v8 = 830770091 * ((-1404298415 * ((-312814405
+             * (a3[v7] ^ v6 ^ ((a3[v7] ^ v6) >> 17)))
+             ^ ([...] >> 11))) ^ ([...] >> 15));
+        v6 = (v8 >> 14) ^ v8;
+        *((_DWORD *)a1 + v7 % (Size >> 2)) ^= v6;
+    }
+
+    // 阶段 2-4: BLAKE2s 包装
+    BLAKE2s_Init(digest_size=Size);
+    BLAKE2s_Update(a3, a4);        // input_data
+    BLAKE2s_Update(a1, Size);      // FNV_mixed_output
+    return BLAKE2s_Final(a1, Size);
+}
+```
+
+**seed 参数语义**：
+
+| seed | FNV 初始状态 | 输出大小 | 用途 |
+|------|-------------|----------|------|
+| `0` | `0x01000193 * (0 ^ 0x811C9DC5)` = 0x4B9B54C1 | 32 bytes | hxv4_key 组件 A |
+| `1` | `0x01000193 * (1 ^ 0x811C9DC5)` = 0x4B9B5554 | 32 bytes | hxv4_nonce1 组件 A |
+| `-1` (=0xFFFFFFFF) | `0x01000193 * (0xFFFFFFFF ^ 0x811C9DC5)` = 0xD79B08DB | 8 bytes | hash_key 完成标志 |
+| `2` | `0x01000193 * (2 ^ 0x811C9DC5)` = 0x4B9B56E7 | 32 bytes | sub_100157D0: UNIQUE 派生 |
+
+### 2.5 sub_100157D0 — Archive Key Update
+
+此函数在 `sub_10015630` 之后调用，生成 `hxv4_nonce0`：
+
+```c
+int __thiscall FilterManager_UpdateGlobalKeyFromArchiveName(
+    _DWORD *this, int a2, size_t a3, int *a4)
+{
+    v9[0] = 749726414;   // 0x2CAFEACE (默认值，当 a4=NULL)
+    v9[1] = -559038737;  // 0xDEADBEEF
+    if (a4) v6 = a4;
+
+    // [A] 从 UNIQUE + seed=2 派生 32 bytes
+    sub_10010410(this + 3102, 0x20u, a2, a3, 2);
+    this[3110] |= 4u;
+
+    // [B] 从 archive seed 派生 32 bytes → XOR 到 nonce0
+    sub_10010410(v10, 0x20u, v6, 8u, *v6);
+    *(this + 3102) ^= v10[0];
+    // ... (完整 XOR 覆盖 8 个 dword)
+
+    // [C] 更新 holder_words[0..1]
+    this[2] = *(this + 3102);
+    this[3] = *(this + 3103);
+}
+```
+
+实际运行时 archive seed 由 DLL 内嵌 8-byte 常量 @ RVA `0x81758` 提供（Sanoba: `A4 E0 8D 9B 7E 4B 96 DD`）。
+
+### 2.6 sub_100148B0 — System.bootStrap 返回 Octet
+
+```c
+int __thiscall sub_100148B0(int this, int a2)
+{
+    if ((*(this + 12448) & 3) == 3)  // bootstrap + params 均完成
+        sub_10010410(&v5, 0x20u, (this + 12352), 0x40u, -1);
+    TVPCreateOctet(&v5, a2, 32);     // 创建 TJS Octet
+    return a2;
+}
+```
+
+### 2.7 2-of-2 秘密共享设计
+
+最终的 `hxv4_key` 和 `hxv4_nonce1` 由两个独立分量 XOR 合成：
+
+```plain
+最终_hxv4_key    = sub_10010410(bootstrap, seed=0) ⊕ sub_100141C0_scratch
+                   ├─ FNV-1a(0) → BLAKE2s(bootstrap ∥ fnv_mix)
+                   └─ Keccak 海绵 + SHA3-512 KDF( bootstrap ∥ params )
+
+最终_hxv4_nonce1 = sub_10010410(params, seed=1) ⊕ sub_100141C0_scratch
+                   ├─ FNV-1a(1) → BLAKE2s(params ∥ fnv_mix)
+                   └─ 同一个 32-byte scratch（同一份 Keccak 海绵输出）
+
+最终_hxv4_nonce0 = sub_10010410(UNIQUE, seed=2) ⊕ sub_10010410(archive_seed)
+```
+
+两个分量使用**完全不同的密码原语**（Keccak/SHA3 vs BLAKE2s），防止代数攻击。
+
+### 2.8 密码原语总览
+
+| 算法 | 函数 | 角色 |
+|------|------|------|
+| **Keccak-f[1600]** (SHA-3 核心置换) | `sub_10011C10` | 海绵排列：Theta/Rho/Pi/Chi/Iota, 24轮 |
+| **自定义 SHA3-512 多流 KDF** | `sub_1001E610` | 4 流吸收 → SHA3-512 → 1024B 展开 |
+| **海绵 absorb** | `sub_10014950` | 8 字节 LE XOR 入 Keccak 状态 |
+| **海绵 squeeze** | `sub_10013BC0` | 8 字节 LE 读 Keccak 状态 |
+| **海绵管道** | `sub_10013FC0` | absorb→Keccak-f→squeeze 循环 |
+| **BLAKE2s-256** | `sub_100159F0` / `sub_10012500` / `sub_10013DF0` | Update / Compress(G函数) / Final |
+| **FNV-1a + MurmurHash3-style 混合** | `sub_10010410` 内联 | 键控种子扩张 + BLAKE2s 包装 |
+| **64-bit xorshift PRNG** | `sub_100190B0` | 128 条 DripValue lane 初始化 |
+| **XOR 状态混洗** | `sub_1000F620` | 两个 0x1000 块间的 XOR 交换 |
+
+### 2.9 三阶段初始化状态机
+
+```plain
+阶段 0: ManagerCtor (sub_1000E2D0)
+  → 分配 0x30B0 字节，零初始化
+  → wrapper[0] = 0
+
+阶段 1: BootstrapDerive (sub_10015630)
+  → Keccak 海绵 + SHA3-512 KDF → scratch + 0x2000 状态块
+  → xorshift PRNG → 128 lanes + 3106 context_u32
+  → FNV+BLAKE2s(seed=0) → hxv4_key 组件 A
+  → FNV+BLAKE2s(seed=1) → hxv4_nonce1 组件 A
+  → XOR scratch → 最终 hxv4_key、hxv4_nonce1
+  → wrapper[0] = 非零 (就绪)
+
+阶段 2: ArchiveDerive (sub_100157D0)
+  → FNV+BLAKE2s(seed=2, UNIQUE) → hxv4_nonce0 组件 A
+  → FNV+BLAKE2s(seed, archive_seed) → XOR → 最终 hxv4_nonce0
+  → holder_words[0..1] ← 从 hxv4_nonce0 复制
+```
+
+---
+
+> 第二节生成了 `HXV4_KEY` 和 `HXV4_NONCES`，使第一节的 Hxv4 payload 得以解密，得到 record 表。下一步是通过逻辑资源名（domain/path + filename）在 record 表中定位具体条目。第三节分析这个哈希映射过程。
+
+## 三、FileHash / PathHash 算法
+
+### 3.1 分析目标
+
+`CompoundStorageMedia` 如何把运行时逻辑资源名映射到 Hxv4 record：
+
+```plain
+逻辑 domain/path name  → pathHash  → Hxv4 record.domain_hash
+逻辑 file name         → fileHash  → Hxv4 record.file_hash
+```
+
+相关函数位于 BOOTSTRAP 解包出的随机 DLL：
+
+| 功能 | 函数 |
+| ---- | ---- |
+| `System.bootStrap` 回调 | `System_bootStrap_callback` / `0x1000EEB0` |
+| 生成 `System.bootStrap` 返回 octet | `sub_100148B0` |
+| 初始化 `CompoundStorageMedia` hashers | `sub_1000A3D0` |
+| `pathHash` TJS 方法 | `sub_10009CE0` |
+| `fileHash` TJS 方法 | `sub_10008F60` |
+| 统一调用 hasher | `sub_10005FE0` |
+| 文件名 hash trait | `FileHashCompute_10016900` |
+| 路径 hash trait | `sub_100169F0` |
+
+### 3.2 startup.tjs 中的运行时对象关系
+
+反编译后的 `Temp/sanoba_static_auto/startup.tjs` 给出了最关键的 TJS 层调用：
+
+```tjs
+var hashKeyOctet = System.bootStrap(bootstrapPrefix, autoPathCallback);
+var mediaName = (string(bootstrapPrefix)).split(":").count > 1
+    ? (string(bootstrapPrefix)).split(":")[0]
+    : "xp3hnp";
+
+var media = new Storages.CompoundStorageMedia("arc", mediaName, hashKeyOctet);
+autoPathCallback._.zpath = media.pathHash("");
+```
+
+Sanoba 的实际值为：
+
+```plain
+bootstrapPrefix = "Sabbat_of_the_Witch (C)YUZUSOFT/JUNOS INC. All Rights Reserved."
+mediaName       = "xp3hnp"
+```
+
+`System.bootStrap(...)` 返回的 32 字节 octet 仍然会传给 `CompoundStorageMedia`，但这不等价于后续 `pathHash/fileHash` 的有效 key。见 3.4。
+
+### 3.3 pathHash / fileHash 调用链
+
+TJS 方法 `pathHash` 和 `fileHash` 都会进入 `sub_10005FE0`：
+
+```plain
+sub_10009CE0(pathHash)
+  → sub_100064C0
+    → sub_10005FE0(this, out_octet, path_hasher, input_tjs_string)
+
+sub_10008F60(fileHash)
+  → sub_10005FB0
+    → sub_10005FE0(this, out_octet, file_hasher, input_tjs_string)
+```
+
+`sub_10005FE0` 会把 `CompoundStorageMedia` 构造时保存的 media name 作为 `extra` 传给 hasher：
+
+```plain
+input = TJS 方法参数
+extra = this + 0x10   # startup.tjs 中的 "xp3hnp"，若为空则不传
+
+hasher.compute(input, extra)
+```
+
+因此 hash 输入不是裸文件名，而是两个连续 update：
+
+```plain
+Update(UTF-16LE(input))
+Update(UTF-16LE(extra))    # extra="xp3hnp"
+Final()
+```
+
+字节流效果等价于 `UTF-16LE(input) || UTF-16LE("xp3hnp")`，中间没有分隔符，也没有额外长度字段。
+
+### 3.4 hash_key 的真实作用：被复制，但 key_len 为 0
+
+`System.bootStrap` 返回的 32 字节 `hash_key` 并没有作为有效 keyed hash key 使用。
+
+构造函数链路：
+
+```plain
+new CompoundStorageMedia("arc", "xp3hnp", hash_key)
+  → sub_1000A3D0(...)
+    → sub_10016890(hash_key_variant)  # PathNameHashTrait
+      → sub_10016680
+    → sub_10016820(hash_key_variant)  # FileNameHashTrait
+      → sub_10016580
+```
+
+`sub_10016680` / `sub_10016580` 的行为：
+
+```plain
+this+4 = pointer_to_internal_key_buffer
+this+8 = 0
+memmove(this+0x0c, hash_key_octet, min(len, 16 or 32))
+```
+
+它们确实复制了 octet 字节，但没有把 `this+8` 设置成有效长度。后续计算时 `key_len = this+8 = 0`。所以本作中实际 hasher 是：
+
+```plain
+pathHash = SipHash-2-4 with 16-byte zero key
+fileHash = unkeyed BLAKE2s-256
+```
+
+`hash_key` 仍然是 `System.bootStrap` 返回值，可用于确认运行时初始化流程是否正确，但它不是本作 Hxv4 lookup hash 的有效 keyed hash key。
+
+### 3.5 pathHash：domain_hash 的计算
+
+路径 hash trait 位于 `sub_100169F0`。其特征：
+
+- 初始化常数为 SipHash 标准 IV：`somepseudorandomlygeneratedbytes`
+- key 长度实际为 `0`，因此使用全零 16 字节 key 初始化
+- 对输入 TJS 字符串按 UTF-16LE 字节更新
+- 若 `extra` 非空，再对 `extra` 的 UTF-16LE 字节做第二次 update
+- finalize 输出 8 字节，按小端显示为 Hxv4 `domain_hash`
+
+Python 复现：
+
+```python
+domain_hash = siphash24(
+    pathname.encode("utf-16le") + "xp3hnp".encode("utf-16le"),
+    bytes(16),
+).hex()
+```
+
+结合 `startup.tjs`，初始归档挂载时 `setupArchiveData` 的上下文是：
+
+```tjs
+incontextof [autoPathCallback, System.exePath + "data.xp3", "", 1]
+```
+
+因此初始 domain/path 参数是空字符串。实测 `pathHash("", extra="xp3hnp") = 94d4a97c61498621`，正好命中 `bgm.xp3` Hxv4 表中所有 record 的 `domain_hash`。
+
+### 3.6 fileHash：file_hash 的计算
+
+压缩函数 `sub_10012500` 通过以下特征确认为标准 BLAKE2s-256：
+
+- 初始化常数完全匹配 BLAKE2s IV（即 SHA-256 IV）：`6A09E667 BB67AE85 3C6EF372 A54FF53A …`
+- 汇编中出现 `rol ebx, 10h`、`rol ebx, 0Ch`，与 BLAKE2s G 函数完全吻合
+- 64 字节消息块，32 字节输出，有 counter 和 finalization flag 字段
+
+但本作 `key_len == 0`，所以走的是 unkeyed BLAKE2s-256：
+
+```python
+file_hash = hashlib.blake2s(
+    filename.encode("utf-16le") + "xp3hnp".encode("utf-16le"),
+    digest_size=32,
+).hexdigest()
+```
+
+注意 `filename` 必须是运行时传给 `CompoundStorageMedia.fileHash()` 的规范化逻辑文件名（含扩展名），裸字符串不可直接使用。
+
+### 3.7 Hxv4 record 定位流程
+
+离线定位一个逻辑资源名时，按以下顺序处理：
+
+```plain
+1. 解析 XP3 index，解密并解压 Hxv4 table。
+2. 从 startup.tjs 确认 CompoundStorageMedia mediaName，本作为 "xp3hnp"。
+3. 确认运行时 domain/path（初始 archive domain 通常是 ""）。
+4. domain_hash = pathHash(domain_path, extra=mediaName)。
+5. 确认运行时规范化 filename（含扩展名）。
+6. file_hash = fileHash(filename, extra=mediaName)。
+7. 在 Hxv4 records 中查找同时满足 domain_hash 和 file_hash 的 record。
+8. 命中后：packed 低 16 位 → XP3 entry index；record.key → stream filter 派生。
+```
+
+重要区分：
+
+| 名称 | 用途 |
+| ---- | ---- |
+| `hxv4_key` / `hxv4_nonce*` | 解密 Hxv4 payload |
+| `System.bootStrap` 返回 octet / `hash_key` | 传给 `CompoundStorageMedia`，本作中 key_len=0 |
+| `domain_hash` / `file_hash` | Hxv4 table lookup key |
+| `record.key` | 命中 record 后用于内容 stream filter 派生 |
+
+### 3.8 不同资源类型的 filename 补全规则
+
+主程序侧 storage 打开链路：
+
+```plain
+TJS / KAG / 资源管理器请求
+  -> TVPCreateBinaryStreamForStorageName
+  -> CompoundStorageMediaFS_Open
+  -> CompoundStorageMediaFS_MapNameToFileKey
+  -> pathHash / fileHash + Hxv4 lookup
+```
+
+Hxv4 中参与 `fileHash()` 的 `filename` 是**脚本层或资源管理器完成类型补全之后，传入 storage 层的相对逻辑文件名**。
+
+| 资源类型 | 裸逻辑名示例 | 参与 `fileHash()` 的 filename | 证据 |
+| -------- | ------------ | ----------------------------- | ---- |
+| BGM 音频 | `bgm01` | `bgm01.opus` | 命中 `bgm.xp3` record 1 |
+| BGM loop sidecar | `bgm01` | `bgm01.opus.sli` | 命中 `bgm.xp3` record 2 |
+| 背景图 | `学院_廊下モブa` | `学院_廊下モブa.png` | 命中 `bgimage.xp3` record 77 |
+| 启动脚本 | `startup` | `startup.tjs` | `Scripts.execStorage` |
+| 数据文件 | 显式 storage | 例如 `cglist.csv` | 显式扩展名参与 hash |
+
+### 3.9 DLL 内嵌常量表（起始地址 0x10080e38）
+
+`sub_10010380` 实现了一个线性扫描的 key-value 表，包含以下四项：
+
+| 键 | 长度 | 内容 |
+| ---- | ------ | ------ |
+| `PARAMS` | 22 字节 | 结构化配置参数：`04 06 02 00 07 01 03 05 03 00 05 04 02 01 01 02 00 80 26 02 C8 01` |
+| `UNIQUE` | 60 字节 | UTF-16LE 宽字符串：`{NENeMEGURuTSUMUGiTOUKoWAKANa}` |
+| `PUBKEY` | 248 字节 | PEM 格式 RSA-1024 公钥 |
+| `WARNING` | 67 字节 | ASCII 警告文本 |
+
+### 3.10 与标准算法差异对比
+
+| 项目 | pathHash | fileHash |
+| ---- | -------- | -------- |
+| 标准算法 | SipHash-2-4 | BLAKE2s-256 |
+| 有效 key | 16 字节全零 | 无 key |
+| 主输入 | UTF-16LE pathname | UTF-16LE filename |
+| 附加输入 | UTF-16LE mediaName | UTF-16LE mediaName |
+| 输出 | 8 字节 | 32 字节 |
+| Hxv4 字段 | `domain_hash` | `file_hash` |
+
+### 3.11 相关文件
+
+- `src/common/resource_hash.py`：Python 复现 `pathHash/fileHash`
+- `src/static_extract/compute_resource_hash.py`：从 EXE 静态恢复 bootstrap 材料并计算可选 pathname/filename hash
+- `tools/FilterManagerDerive/Program.cs`：离线加载 BOOTSTRAP DLL，导出 `hash_key` / Hxv4 key / nonce
+
+---
+
+> 第三节完成了从逻辑资源名到 Hxv4 record 的定位。每条 record 包含一个 64-bit unique key，这个 key 需要经过 DripValue VM 派生为 filter 种子。下一节分析这个 VM 的架构和运行时语义。
+
+## 四、DripValue VM 密钥派生
+
+DripValue VM 是内嵌在 DLL 中的自定义 32-bit 字节码解释器，用于从 64-bit 资源密钥派生流过滤器的种子参数。类名 "DripValueImpl" 来自 DLL 的 RTTI 虚表符号。
+
+### 4.1 入口函数
 
 ```plain
 DripValueImpl_get64_from_u32 (RVA 0x19070):
@@ -102,14 +639,27 @@ DripValueImpl_get64_from_u32 (RVA 0x19070):
   return (hi << 32) | lo
 ```
 
-### 2.2 VM 架构
+### 4.2 VM 架构
 
 - **128 条 lane**，每条 lane 包含一段 record 程序
 - 每条 record 格式：`[param (uint32), opcode_rva (uint32)]`
 - 支持嵌套递归调用（`DRIP_OP_RECURSE`）
 - 全局 context u32 数组（3106 个 dword）
 
-### 2.3 操作码全集（20 种）
+解释器 `DripValueLane_eval` (RVA `0x19300`) 的核心循环：
+
+```c
+while (pc != lane->end) {
+    record = *(pc);              // param (u32)
+    opcode = *(pc + 4);          // 回调函数指针
+    if (!opcode(&result, &state, record))
+        break;                   // DRIP_OP_STOP 返回 false
+    pc += 8;                     // 下一条 record
+}
+return result;
+```
+
+### 4.3 操作码全集（20 种）
 
 | 常量 | RVA | 操作 | Python 实现 |
 | ------ | ----- | ------ | ------------- |
@@ -137,7 +687,7 @@ DripValueImpl_get64_from_u32 (RVA 0x19070):
 
 所有算术按 **32-bit unsigned wrap** (`& 0xFFFFFFFF`)，右移为**逻辑右移**。
 
-### 2.4 DripProgram 实现
+### 4.4 DripProgram 实现
 
 核心类 — [src/common/xp3_inspect.py:173](../../src/common/xp3_inspect.py#L173)：
 
@@ -152,13 +702,60 @@ class DripProgram:
     def build_filter_state(self, key: int, open_flag: int) -> bytes: ...
 ```
 
+### 4.5 Lane 初始化 — sub_100190B0 (64-bit xorshift PRNG)
+
+128 条 lane 的 record 序列在 FilterManager 初始化时由 `sub_100190B0` 构造（调用链：`sub_10017BB0` → `sub_100190B0` → `sub_10017E90`）。
+
+```c
+// sub_100190B0 反编译（来自 IDA Hex-Rays）
+int __thiscall sub_100190B0(char *this, int a2, int a3, char a4)
+{
+    for (v4 = 0; v4 < 128; ++v4) {
+        // 64-bit xorshift PRNG 生成每条 lane 的两个随机种子
+        v6 = v4 + 2135587861;  // 0x7F4A7C55
+        HIDWORD(v6) = ~v4 - 1640531527 + CF;  // 0x9E3779B9 (golden ratio φ)
+
+        // 第一轮 xorshift
+        t = 0xBF58476D1CE4E5B9 * (v6 ^ (v6 >> 30));
+        v13 = (0x94D049BB133111EB * (t ^ (t >> 27))) ^ ([...] >> 31);
+
+        // 第二轮 xorshift (用不同的初始值)
+        t2 = 0xBF58476D1CE4E5B9 * ((v6 - 0x61C8864680B583EB) ^ ([...] >> 30));
+        v14 = (0x94D049BB133111EB * (t2 ^ (t2 >> 27))) ^ ([...] >> 31);
+
+        // 初始化 lane v4 的状态
+        lane[v4].current = lane[v4].begin;   // 重置 PC
+        lane[v4].context_ptr = a2;           // 全局 context 指针
+
+        // 调用 sub_10017E90 为该 lane 生成 record 序列
+        if (!sub_10017E90(&lane_init_params))
+            return -1;
+    }
+    return 0;
+}
+```
+
+`sub_10017E90` 内部写入的是硬编码字节序列（`"WVSRQ"`、`"ZY[^_]"`、`0x8B7C2418`），lane 的 opcode 序列不随 bootstrap/PARAMS 变化而改变。
+
+**64-bit xorshift 常数**：
+
+| 常数 | 值 | 作用 |
+|------|-----|------|
+| `0x7F4A7C55` | 2135587861 | 初始加数（lane 索引偏移） |
+| `0x9E3779B9` | 黄金比例 φ | 高位字加数 |
+| `0xBF58476D1CE4E5B9` | — | xorshift 乘数 M1 |
+| `0x94D049BB133111EB` | — | xorshift 乘数 M2 |
+| `0x61C8864680B583EB` | — | 第二轮减数 (轮换常数) |
+
 ---
 
-## 三、BuildFilterStateFromUniqueKey
+> 第四节描述了 DripValue VM 的运行时执行模型和 lane 初始化过程。这个 VM 的主要调用者是下一节的 `BuildFilterStateFromUniqueKey`——它将 64-bit record key 转化为 48-byte filter seed state。
+
+## 五、BuildFilterStateFromUniqueKey
 
 从 Hxv4 record 的 64-bit key 生成 48 字节 filter seed state。
 
-### 3.1 算法流程
+### 5.1 算法流程
 
 ```plain
 BuildFilterStateFromUniqueKey(state48, key64, open_flag):
@@ -186,7 +783,7 @@ BuildFilterStateFromUniqueKey(state48, key64, open_flag):
      state[0x2D] = 0    # null_mode
 ```
 
-### 3.2 48-byte Seed State 布局
+### 5.2 48-byte Seed State 布局
 
 ```plain
 Offset  Size  Field
@@ -204,9 +801,11 @@ Offset  Size  Field
 
 ---
 
-## 四、FilterImpl — Stream XOR Transform
+> 第五节将 record.key 转化为了 48-byte seed state。这个 seed state 随后被 FilterImpl 消费，初始化为两个 FilterBoundary 并驱动实际的流解密。下一节展开四层 XOR 变换的完整细节。
 
-### 4.1 FilterBoundary 初始化
+## 六、FilterImpl — Stream XOR Transform
+
+### 6.1 FilterBoundary 初始化
 
 `FilterImpl_InitState` (RVA `0x1000E240`) 将 boundary seed 初始化为 FilterBoundary 结构：
 
@@ -222,7 +821,7 @@ Offset  Size  Field
   key = key_byte * 0x01010101        # dword key
 ```
 
-### 4.2 四层 XOR 变换
+### 6.2 四层 XOR 变换
 
 `FilterRuntimeState.apply(data, offset)` — [src/common/xp3_inspect.py:441](../../src/common/xp3_inspect.py#L441)
 
@@ -277,7 +876,7 @@ logical offset % 4 == 3 → key byte 3
 
 仅当 `byte0` / `byte1` 非零时才执行。
 
-### 4.3 完整 apply() 流程
+### 6.3 完整 apply() 流程
 
 ```python
 def apply(self, data: bytearray, offset: int) -> bool:
@@ -292,14 +891,11 @@ def apply(self, data: bytearray, offset: int) -> bool:
     # Layer 2: Split
     split = self.split_offset
     if split <= offset:
-        # Layer 3+4: all boundary1
         self._apply_boundary(data, self.boundary1, ...)
     elif split < end:
-        # Layer 3+4: left → boundary0, right → boundary1
         self._apply_boundary(data, self.boundary0, ..., first_size)
         self._apply_boundary(data, self.boundary1, ..., end - split)
     else:
-        # Layer 3+4: all boundary0
         self._apply_boundary(data, self.boundary0, ...)
 
     return True
@@ -307,25 +903,35 @@ def apply(self, data: bytearray, offset: int) -> bool:
 
 ---
 
-## 五、FilterManager 运行时状态
+> 第六节覆盖了单个文件的流解密逻辑。所有这些组件——初始化、映射表、VM、filter——被下一节的 FilterManager 统一管理和编排。
 
-### 5.1 结构
+## 七、FilterManager 运行时状态
+
+### 7.1 结构
 
 ```plain
-FilterManager:
+FilterManager (总大小 0x30B0):
   +0x00  manager[0] wrapper  → 非空时表示就绪
   +0x04  manager[1]
-  +0x08  DripValueImpl*       → DripValue VM 实例指针
-  +0x0C  holder_words[0]
-  +0x10  holder_words[1]
-  +0x14  holder_words[2]
-  +0x18  holder_words[3]
-  +0x1C  holder_words[4]
-  +0x20  holder_words[5]
-  ...    (更多状态数据)
+  +0x08  FilterManagerCore 起始
+          +0x00  DripValueImpl*       → DripValue VM 实例指针 (独立分配 0x804 bytes)
+          +0x04  holder_words[0]
+          +0x08  holder_words[1]
+          +0x0C  holder_words[2]
+          +0x10  holder_words[3]
+          +0x14  holder_words[4]
+          +0x18  holder_words[5]
+          +0x20  Keccak 海绵状态 (0x2000 bytes)
+          +0x2020 XOR 混合状态块 (0x1000 bytes)
+          +0x3038 hxv4_key (32 bytes)
+          +0x3058 hxv4_nonce1 (24 bytes)
+          +0x3078 hxv4_nonce0 (24 bytes)
+          +0x3098 派生完成标志位
+
+完整内存布局与初始化流程见第二节。
 ```
 
-### 5.2 DripValueImpl
+### 7.2 DripValueImpl
 
 ```plain
 DripValueImpl:
@@ -337,7 +943,7 @@ DripValueImpl:
            +0x0C  context 指针 (所有 lane 共享)
 ```
 
-### 5.3 状态导出
+### 7.3 状态导出
 
 通过 `inspect_manager_dump.py` 从运行时 full-memory minidump 导出（[src/dynamic_capture/inspect_manager_dump.py](../../src/dynamic_capture/inspect_manager_dump.py)）：
 
@@ -374,7 +980,7 @@ minidump → 解析模块列表 → 找到随机 DLL
 
 此文件是**所有离线提取操作的核心依赖**。
 
-### 5.4 离线解密时的使用方式
+### 7.4 离线解密时的使用方式
 
 `xp3_inspect.py --filter recovered --drip-program drip_program.json` 会把 `drip_program.json` 还原为 `DripProgram` 对象（[src/common/xp3_inspect.py:196](../../src/common/xp3_inspect.py#L196)）。其中：
 
@@ -403,16 +1009,18 @@ XP3 archive
 
 关键实现对应关系：
 
-- Hxv4 payload 解密：`decrypt_hxv4_payload()` 使用 JSON 中的 `hxv4_key` / `hxv4_nonce*`，否则才回退到代码内置常量（[src/common/xp3_inspect.py:577](../../src/common/xp3_inspect.py#L577)）。
+- Hxv4 payload 解密：`decrypt_hxv4_payload()` 使用 JSON 中的 `hxv4_key` / `hxv4_nonce*`（[src/common/xp3_inspect.py:577](../../src/common/xp3_inspect.py#L577)）。
 - Hxv4 table 解析：`parse_hxv4_table()` 解密 payload、zlib 解压并解析 record（[src/common/xp3_inspect.py:658](../../src/common/xp3_inspect.py#L658)）。
-- entry → filter state 映射：`build_filter_state_map()` 对每条 Hxv4 record 调用 `build_filter_state(record.key, open_flag)`，生成按 XP3 entry index 索引的 filter state 表（[src/common/xp3_inspect.py:729](../../src/common/xp3_inspect.py#L729)）。
-- 条目内容还原：`extract_entry()` 先按 XP3 segment 读取并 zlib 解压，再在 `--filter recovered` 模式下对每个 chunk 调用 recovered filter，最后以 adler32 判断是否还原成功（[src/common/xp3_inspect.py:883](../../src/common/xp3_inspect.py#L883)）。
+- entry → filter state 映射：`build_filter_state_map()` 对每条 Hxv4 record 调用 `build_filter_state(record.key, open_flag)`（[src/common/xp3_inspect.py:729](../../src/common/xp3_inspect.py#L729)）。
+- 条目内容还原：`extract_entry()` 先按 XP3 segment 读取并 zlib 解压，再对每个 chunk 调用 recovered filter，最后以 adler32 判断是否还原成功（[src/common/xp3_inspect.py:883](../../src/common/xp3_inspect.py#L883)）。
 
 `drip_program.json` 保存了两层材料：第一层用于打开 Hxv4 映射表，第二层用于复现运行时 DripValue VM，并按每个 Hxv4 record 的 resource key 动态派生实际的 stream filter state。
 
 ---
 
-## 六、Stream Filter 运行时读路径
+> 第七节给出了 FilterManager 的完整布局与离线导出流程。下一节展示运行时 DLL 内部的 stream read 调用链，以验证过滤逻辑的实际挂载点。
+
+## 八、Stream Filter 运行时读路径
 
 随机 DLL 中的完整 stream read 调用链：
 
@@ -430,7 +1038,9 @@ CryptoFilterStream_Read_filter_after_read  (0x10010C80)
 
 ---
 
-## 七、关键常量
+> 第八节确认了过滤逻辑在运行时的挂载点。下一节给出 Sanoba 样本中实际提取的密钥常量值。
+
+## 九、关键常量
 
 ```python
 # XChaCha20-Poly1305 密钥 (从 FilterManager block 0 恢复)
@@ -441,16 +1051,18 @@ HXV4_KEY = bytes.fromhex(
 
 # XChaCha20-Poly1305 Nonces (从 FilterManager block 1/2 恢复)
 HXV4_NONCES = {
-    0: bytes.fromhex("d99230e02623f4a0c4f2857682b4de6d"  # 前 24 字节
+    0: bytes.fromhex("d99230e02623f4a0c4f2857682b4de6d"
                      "fefe820b57060e50b7cc2580db04d993")[:24],
-    1: bytes.fromhex("b96f89630850dd23a13810c7718ad003"  # 前 24 字节
+    1: bytes.fromhex("b96f89630850dd23a13810c7718ad003"
                      "936d1d4a3ae008909be93eee7ac8fc3e")[:24],
 }
 ```
 
 ---
 
-## 八、验证结果
+> 第九节给出了具体的 hex 常量。下一节的验证结果证明以上全链路分析与运行时行为完全一致。
+
+## 十、验证结果
 
 全包 Adler32 验证（使用 recovered filter）：
 
@@ -468,353 +1080,3 @@ HXV4_NONCES = {
 | voice.xp3 | 28,988 | 0 | 0 |
 
 **全部 35,281 个条目校验通过，零失败**，证明离线 Python 实现与运行时过滤逻辑完全一致。
-
----
-
-## 九、FileHash 算法逆向分析
-
-### 9.1 分析目标
-
-本节分析 `CompoundStorageMedia` 如何把运行时逻辑资源名映射到 Hxv4 record：
-
-```plain
-逻辑 domain/path name  → pathHash  → Hxv4 record.domain_hash
-逻辑 file name         → fileHash  → Hxv4 record.file_hash
-```
-
-相关函数位于 BOOTSTRAP 解包出的随机 DLL：
-
-| 功能 | 函数 |
-| ---- | ---- |
-| `System.bootStrap` 回调 | `System_bootStrap_callback` / `0x1000EEB0` |
-| 生成 `System.bootStrap` 返回 octet | `sub_100148B0` |
-| 初始化 `CompoundStorageMedia` hashers | `sub_1000A3D0` |
-| `pathHash` TJS 方法 | `sub_10009CE0` |
-| `fileHash` TJS 方法 | `sub_10008F60` |
-| 统一调用 hasher | `sub_10005FE0` |
-| 文件名 hash trait | `FileHashCompute_10016900` |
-| 路径 hash trait | `sub_100169F0` |
-
-### 9.2 startup.tjs 中的运行时对象关系
-
-反编译后的 `Temp/sanoba_static_auto/startup.tjs` 给出了最关键的 TJS 层调用：
-
-```tjs
-var hashKeyOctet = System.bootStrap(bootstrapPrefix, autoPathCallback);
-var mediaName = (string(bootstrapPrefix)).split(":").count > 1
-    ? (string(bootstrapPrefix)).split(":")[0]
-    : "xp3hnp";
-
-var media = new Storages.CompoundStorageMedia("arc", mediaName, hashKeyOctet);
-autoPathCallback._.zpath = media.pathHash("");
-```
-
-Sanoba 的实际值为：
-
-```plain
-bootstrapPrefix = "Sabbat_of_the_Witch (C)YUZUSOFT/JUNOS INC. All Rights Reserved."
-mediaName       = "xp3hnp"
-```
-
-`System.bootStrap(...)` 返回的 32 字节 octet 仍然会传给 `CompoundStorageMedia`，但这不等价于后续 `pathHash/fileHash` 的有效 key。见 9.4。
-
-### 9.3 pathHash / fileHash 调用链
-
-TJS 方法 `pathHash` 和 `fileHash` 都会进入 `sub_10005FE0`：
-
-```plain
-sub_10009CE0(pathHash)
-  → sub_100064C0
-    → sub_10005FE0(this, out_octet, path_hasher, input_tjs_string)
-
-sub_10008F60(fileHash)
-  → sub_10005FB0
-    → sub_10005FE0(this, out_octet, file_hasher, input_tjs_string)
-```
-
-`sub_10005FE0` 会把 `CompoundStorageMedia` 构造时保存的 media name 作为 `extra` 传给 hasher：
-
-```plain
-input = TJS 方法参数
-extra = this + 0x10   # startup.tjs 中的 "xp3hnp"，若为空则不传
-
-hasher.compute(input, extra)
-```
-
-因此 hash 输入不是裸文件名，而是两个连续 update：
-
-```plain
-Update(UTF-16LE(input))
-Update(UTF-16LE(extra))    # extra="xp3hnp"
-Final()
-```
-
-字节流效果等价于：
-
-```plain
-UTF-16LE(input) || UTF-16LE("xp3hnp")
-```
-
-中间没有分隔符，也没有额外长度字段。
-
-### 9.4 hash_key 的真实作用：被复制，但 key_len 为 0
-
-此前容易误判的一点是：`System.bootStrap` 返回的 32 字节 `hash_key` 并没有作为有效 keyed hash key 使用。
-
-构造函数链路：
-
-```plain
-new CompoundStorageMedia("arc", "xp3hnp", hash_key)
-  → sub_1000A3D0(...)
-    → sub_10016890(hash_key_variant)  # PathNameHashTrait
-      → sub_10016680
-    → sub_10016820(hash_key_variant)  # FileNameHashTrait
-      → sub_10016580
-```
-
-`sub_10016680` / `sub_10016580` 的行为：
-
-```plain
-this+4 = pointer_to_internal_key_buffer
-this+8 = 0
-memmove(this+0x0c, hash_key_octet, min(len, 16 or 32))
-```
-
-也就是说，它们确实复制了 octet 字节，但没有把 `this+8` 设置成 `16` 或 `32`。后续计算时读取的是：
-
-```plain
-key_ptr = this+4
-key_len = this+8  # 实际保持 0
-```
-
-所以本作中实际 hasher 是：
-
-```plain
-pathHash = SipHash-2-4 with 16-byte zero key
-fileHash = unkeyed BLAKE2s-256
-```
-
-`hash_key` 仍然是 `System.bootStrap` 返回值，可用于确认运行时初始化流程是否正确，但它不是本作 Hxv4 lookup hash 的有效 keyed hash key。
-
-### 9.5 pathHash：domain_hash 的计算
-
-路径 hash trait 位于 `sub_100169F0`。其特征：
-
-- 初始化常数为 SipHash 标准 IV：
-  `somepseudorandomlygeneratedbytes`
-- key 长度实际为 `0`，因此使用全零 16 字节 key 初始化
-- 对输入 TJS 字符串按 UTF-16LE 字节更新
-- 若 `extra` 非空，再对 `extra` 的 UTF-16LE 字节做第二次 update
-- finalize 输出 8 字节，按小端显示为 Hxv4 `domain_hash`
-
-Python 复现：
-
-```python
-domain_hash = siphash24(
-    pathname.encode("utf-16le") + "xp3hnp".encode("utf-16le"),
-    bytes(16),
-).hex()
-```
-
-结合 `startup.tjs`，初始归档挂载时 `setupArchiveData` 的上下文是：
-
-```tjs
-incontextof [autoPathCallback, System.exePath + "data.xp3", "", 1]
-```
-
-因此初始 domain/path 参数是空字符串，而不是物理 XP3 文件名。实测：
-
-```plain
-pathHash("", extra="xp3hnp")
-= 94d4a97c61498621
-```
-
-这正好命中 `bgm.xp3` Hxv4 表中所有 record 的 `domain_hash`。而：
-
-```plain
-pathHash("bgm", extra="xp3hnp")
-= 384eb6c2e716927a
-```
-
-不会命中该表。结论：`pathname` 是 `Storages` 自动挂载逻辑传入的逻辑 domain/path，不是 XP3 文件名。
-
-### 9.6 fileHash：file_hash 的计算
-
-压缩函数 `sub_10012500` 通过以下特征确认为标准 BLAKE2s-256：
-
-- 初始化常数完全匹配 BLAKE2s IV（即 SHA-256 IV）：
-  `6A09E667 BB67AE85 3C6EF372 A54FF53A 510E527F 9B05688C 1F83D9AB 5BE0CD19`
-- 汇编中出现 `rol ebx, 10h`（G 函数第一个旋转 = 16位），`rol ebx, 0Ch`（12位），与 BLAKE2s G 函数完全吻合
-- 64 字节消息块，32 字节输出，有 counter 和 finalization flag 字段
-
-但本作 `key_len == 0`，所以 `FileHashCompute_10016900` 实际走的是 unkeyed BLAKE2s-256：
-
-```plain
-BLAKE2s_Init(digest_size=32, key_len=0)
-Update(UTF-16LE(filename))
-Update(UTF-16LE("xp3hnp"))
-Final()
-```
-
-Python 复现：
-
-```python
-file_hash = hashlib.blake2s(
-    filename.encode("utf-16le") + "xp3hnp".encode("utf-16le"),
-    digest_size=32,
-).hexdigest()
-```
-
-注意，`filename` 必须是运行时传给 `CompoundStorageMedia.fileHash()` 的规范化逻辑文件名。裸字符串不一定可用。实测：
-
-```plain
-fileHash("bgm01", extra="xp3hnp")
-= 19ffc3f9c3848e74fe7f94850554ffa7579dbeaf7e83509703cc44c3a23f3f08
-```
-
-该值没有命中 `bgm.xp3` 的 Hxv4 表，说明真实逻辑文件名并非裸 `bgm01`。后续应通过以下方式确认：
-
-1. hook `sub_10008F60` 或 `FileHashCompute_10016900`，记录传入 TJS 字符串；
-2. 或在 TJS 层追踪 `Storages` 请求 BGM 时传入 `arc://./...` 后的规范化 storage name；
-3. 再使用同一算法计算 `file_hash`，与 Hxv4 表按 `(domain_hash, file_hash)` 二元组匹配。
-
-### 9.7 Hxv4 record 定位流程
-
-离线定位一个逻辑资源名时，按以下顺序处理：
-
-```plain
-1. 解析 XP3 index，解密并解压 Hxv4 table。
-2. 从 startup.tjs 确认 CompoundStorageMedia mediaName，本作为 "xp3hnp"。
-3. 确认运行时 domain/path：
-   - 初始 archive domain 通常是 ""；
-   - 自动挂载时使用 autopath(arg0, arg1, arg2) 中的 arg1.toLowerCase()。
-4. domain_hash = pathHash(domain_path, extra=mediaName)。
-5. 确认运行时规范化 filename。
-6. file_hash = fileHash(filename, extra=mediaName)。
-7. 在 Hxv4 records 中查找同时满足：
-   record.domain_hash == domain_hash
-   record.file_hash   == file_hash
-8. 命中 record 后：
-   - packed 低 16 位映射到 XP3 entry index；
-   - record.key 用于后续 stream filter state 派生。
-```
-
-重要区分：
-
-| 名称 | 用途 |
-| ---- | ---- |
-| `hxv4_key` / `hxv4_nonce*` | 解密 Hxv4 payload |
-| `System.bootStrap` 返回 octet / `hash_key` | 被传给 `CompoundStorageMedia`，本作中因 key_len 为 0 不作为有效 hash key |
-| `domain_hash` / `file_hash` | Hxv4 table lookup key |
-| `record.key` | 命中 record 后用于内容 stream filter 派生 |
-
-### 9.8 不同资源类型的 filename 补全规则
-
-主程序侧目前看到的 storage 打开链路是：
-
-```plain
-TJS / KAG / 资源管理器请求
-  -> TVPCreateBinaryStreamForStorageName (0xC615D0)
-  -> storage media vtable
-  -> CompoundStorageMediaFS_Open
-  -> CompoundStorageMediaFS_MapNameToFileKey
-  -> pathHash / fileHash + Hxv4 lookup
-```
-
-`TVPCreateBinaryStreamForStorageName` 和 `Scripts_execStorage_or_evalStorage_core`
-负责把已经给出的 storage name 打开为 stream；在这条主程序通用路径中没有看到
-“按资源类型统一补扩展名”的表。因此，Hxv4 中参与 `fileHash()` 的
-`filename` 应理解为：**脚本层或资源管理器完成类型补全之后，传入 storage 层的
-相对逻辑文件名**，而不是用户脚本里最初写出的裸资源名。
-
-对当前样本已确认的形式如下：
-
-| 资源类型 | 裸逻辑名示例 | 参与 `fileHash()` 的 filename | 证据 |
-| -------- | ------------ | ----------------------------- | ---- |
-| BGM 音频 | `bgm01` | `bgm01.opus` | 命中 `bgm.xp3` record 1 / XP3 entry 1 |
-| BGM loop sidecar | `bgm01` | `bgm01.opus.sli` | 命中 `bgm.xp3` record 2 / XP3 entry 2；主程序 `sub_CC6520` 解析 `.sli` 文本中的 `LoopStart=` / `LoopLength=` |
-| 背景图 | `学院_廊下モブa` | `学院_廊下モブa.png` | 命中 `bgimage.xp3` record 77 / XP3 entry 77 |
-| 启动脚本 | `startup` / 显式 storage | `startup.tjs` | `Scripts.execStorage` 直接打开完成后的 storage name |
-| 数据文件 | 显式 storage | 例如 `!cglist.csv` | 显式扩展名参与 hash |
-
-几个容易踩错的点：
-
-1. `filename` 不包含 `arc://./`、物理 XP3 路径或 archive 名；
-2. 当前已确认的 BGM / 背景图都不带 `bgm/`、`bgimage/` 这类目录前缀；
-3. `pathname` 仍来自 `startup.tjs` 的 `autopath(archivePath, domainPath, mounting)`，
-   初始自动挂载域为 `""`，所以这些命中的 `domain_hash` 是
-   `pathHash("", extra="xp3hnp") = 94d4a97c61498621`；
-4. 图像解码器本身支持 TLG/PNG/JPEG 等格式，但主程序图像解码路径只是识别并解码
-   已打开 stream，没有在当前主程序层确认到一个全局“无扩展名自动尝试
-   `.tlg/.png/.jpg`”列表；具体资源管理器若隐藏扩展名，需要继续从对应 TJS/KAG
-   脚本或运行时 hook 验证。
-
-已验证 hash 示例：
-
-```plain
-fileHash("bgm01.opus", extra="xp3hnp")
-= 0774d654ab8ff21a41fbd3acd81950ce8d6e3af115a1c01c954c34d4f7339433
-
-fileHash("bgm01.opus.sli", extra="xp3hnp")
-= 307ee30f554ffe810089261afcea357522842784c661116feb9db63ac0f88172
-
-fileHash("学院_廊下モブa.png", extra="xp3hnp")
-= ffa82b41844a4ac29f0e1b6b8fc1103c9f4a9127179cdf228386050de79e61df
-```
-
-后续定位未知类型时，应优先 hook 主程序 `TVPCreateBinaryStreamForStorageName`
-观察完成后的 storage name；若要直接看 hash 输入，则 hook BOOTSTRAP DLL 中的
-`CompoundStorageMediaFS_MapNameToFileKey` 或 `FileHashCompute_10016900`。
-离线分析时可按 archive 类型枚举候选后缀，并用 `(domain_hash, file_hash)` 反查 Hxv4。
-
-### 9.9 DLL 内嵌常量表（起始地址 0x10080e38）
-
-`sub_10010380` 实现了一个线性扫描的 key-value 表，包含以下四项：
-
-| 键 | 长度 | 内容 |
-| ---- | ------ | ------ |
-| `PARAMS` | 22 字节 | 结构化配置参数：`04 06 02 00 07 01 03 05 03 00 05 04 02 01 01 02 00 80 26 02 C8 01` |
-| `UNIQUE` | 60 字节 | UTF-16LE 宽字符串：`{NENeMEGURuTSUMUGiTOUKoWAKANa}`（游戏专属标识符，来自角色名） |
-| `PUBKEY` | 248 字节 | PEM 格式 RSA-1024 公钥（`-----BEGIN PUBLIC KEY-----\nMIGJ...`） |
-| `WARNING` | 67 字节 | ASCII 警告文本（`Warning! Extracting this game da...`） |
-
-### 9.10 System.bootStrap 返回 octet 的派生流程
-
-```plain
-TJS 脚本调用：
-  System.bootStrap(bootstrapPrefix, autoPathCallback)
-
-DLL 内：
-  final_bootstrap = bootstrapPrefix + WARNING
-  params          = PARAMS
-
-  sub_10015630(
-      manager + 8,
-      final_bootstrap_utf16le,
-      PARAMS
-  )
-
-  sub_100148B0(manager)
-    → sub_10010410(out32, 0x20, manager+0x3040, 0x40, -1)
-    → 返回 32 字节 TJS octet
-```
-
-该返回 octet 当前由 `tools/FilterManagerDerive` 导出为 `hash_key`，用于调试启动链路。再次强调：本作 `pathHash/fileHash` 实际 key_len 为 0。
-
-### 9.11 与标准算法差异对比
-
-| 项目 | pathHash | fileHash |
-| ---- | -------- | -------- |
-| 标准算法 | SipHash-2-4 | BLAKE2s-256 |
-| 有效 key | 16 字节全零 | 无 key |
-| 主输入 | UTF-16LE pathname | UTF-16LE filename |
-| 附加输入 | UTF-16LE mediaName | UTF-16LE mediaName |
-| 输出 | 8 字节 | 32 字节 |
-| Hxv4 字段 | `domain_hash` | `file_hash` |
-
-### 9.12 相关文件
-
-- `src/common/resource_hash.py`：Python 复现 `pathHash/fileHash`
-- `src/static_extract/compute_resource_hash.py`：从 EXE 静态恢复 bootstrap 材料并计算可选 pathname/filename hash
-- `tools/FilterManagerDerive/Program.cs`：离线加载 BOOTSTRAP DLL，导出 `hash_key` / Hxv4 key / nonce
-- DLL `1ae7153ed25d.dll.i64`：本节分析的主文件
