@@ -47,10 +47,15 @@ def build_parser(repo_root: Path) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Recover System.bootStrap inputs from a game EXE, derive the runtime "
-            "hash_key, and compute optional pathHash/fileHash values."
+            "hash_key, and compute optional pathHash/fileHash values. If --exe is "
+            "omitted, compute hash values directly in no-key mode."
         )
     )
-    parser.add_argument("--exe", type=Path, required=True, help="target PE file that provides game resources")
+    parser.add_argument(
+        "--exe",
+        type=Path,
+        help="target PE file that provides game resources; omit to compute hashes directly without a game key",
+    )
     parser.add_argument("--work-dir", type=Path, default=repo_root / "data" / "hash_probe")
     parser.add_argument("--out", type=Path, help="optional JSON summary output path")
     parser.add_argument("--drip-out", type=Path, help="derived manager JSON path; defaults to work-dir/drip_program.json")
@@ -215,8 +220,21 @@ def recover_bootstrap(args: argparse.Namespace, repo_root: Path) -> dict[str, ob
 def main(argv: list[str] | None = None) -> int:
     repo_root = Path(__file__).resolve().parents[2]
     args = build_parser(repo_root).parse_args(argv)
-    summary = recover_bootstrap(args, repo_root)
-    hash_key = bytes.fromhex(str(summary["hash_key"]))
+    if args.exe is None:
+        if args.keyed:
+            raise ValueError("--keyed requires --exe so the runtime hash_key can be recovered")
+        if not args.pathname and not args.filename:
+            raise ValueError("at least one --pathname or --filename is required when --exe is omitted")
+        summary: dict[str, object] = {
+            "mode": "no_key",
+            "hash_key": "",
+            "path_hash_key": "",
+            "file_hash_key": "",
+        }
+        hash_key = b""
+    else:
+        summary = recover_bootstrap(args, repo_root)
+        hash_key = bytes.fromhex(str(summary["hash_key"]))
 
     path_results = []
     for pathname in args.pathname:
@@ -232,22 +250,36 @@ def main(argv: list[str] | None = None) -> int:
     summary["file_hashes"] = file_results
     summary["hasher_keyed"] = args.keyed
 
-    out_path = args.out or (args.work_dir / "resource_hash.summary.json")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Determine output path: when --exe is omitted and --out is not explicitly
+    # given, skip file output and only print to console.
+    no_exe_mode = args.exe is None
+    out_path: Path | None = None
+    if args.out is not None:
+        out_path = args.out
+    elif not no_exe_mode:
+        out_path = args.work_dir / "resource_hash.summary.json"
 
-    print(f"bootstrap_prefix: {summary['bootstrap_prefix']}")
-    print(f"warning: {summary['warning']}")
-    print(f"final_bootstrap: {summary['final_bootstrap']}")
-    print(f"hash_key: {summary['hash_key']}")
-    print(f"path_hash_key: {summary['path_hash_key']}")
-    print(f"file_hash_key: {summary['file_hash_key']}")
+    json_text = json.dumps(summary, ensure_ascii=False, indent=2)
+    if out_path is not None:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json_text, encoding="utf-8")
+
+    if not no_exe_mode:
+        print(f"bootstrap_prefix: {summary['bootstrap_prefix']}")
+        print(f"warning: {summary['warning']}")
+        print(f"final_bootstrap: {summary['final_bootstrap']}")
+        print(f"hash_key: {summary['hash_key']}")
+        print(f"path_hash_key: {summary['path_hash_key']}")
+        print(f"file_hash_key: {summary['file_hash_key']}")
+    else:
+        print("mode: no_key")
     print(f"hasher_keyed: {args.keyed}")
     for item in path_results:
         print(f"pathHash({item['pathname']}): {item['path_hash']}")
     for item in file_results:
         print(f"fileHash({item['filename']}): {item['file_hash']}")
-    print(f"summary: {out_path}")
+    if out_path is not None:
+        print(f"summary: {out_path}")
     return 0
 
 
