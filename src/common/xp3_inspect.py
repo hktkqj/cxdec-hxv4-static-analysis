@@ -1119,6 +1119,35 @@ def command_verify(args: argparse.Namespace) -> int:
     return 1 if failed or unresolved else 0
 
 
+def _load_hxv4_hashes_for_entries(
+    blob: bytes,
+    entries: list[Entry],
+    args: argparse.Namespace,
+) -> dict[int, dict[str, object]]:
+    """Build a mapping from xp3_entry_index to Hxv4 hash fields.
+
+    Returns an empty dict if the archive has no Hxv4 table or parsing fails.
+    """
+    try:
+        _, _, _, index = load_index(blob)
+        drip_path = getattr(args, "drip_program", None)
+        drip_program = DripProgram.load(drip_path) if drip_path else None
+        _, records = parse_hxv4_table(blob, index, entries, drip_program)
+    except XP3Error:
+        return {}
+
+    hashes: dict[int, dict[str, object]] = {}
+    for rec in records:
+        if rec.xp3_entry_index is None:
+            continue
+        hashes[rec.xp3_entry_index] = {
+            "pathname_hash": rec.domain_hash,
+            "filename_hash": rec.file_hash,
+            "hxv4_key": rec.key,
+        }
+    return hashes
+
+
 def command_extract_all(args: argparse.Namespace) -> int:
     args.output.mkdir(parents=True, exist_ok=True)
     manifest_path = args.output / "manifest.jsonl"
@@ -1130,6 +1159,7 @@ def command_extract_all(args: argparse.Namespace) -> int:
         for path in iter_archives(args.paths):
             _, entries, blob = read_archive(path)
             filter_states = load_filter_states_for_archive(blob, entries, args)
+            hxv4_hashes = _load_hxv4_hashes_for_entries(blob, entries, args)
             archive_dir = args.output / path.stem
             archive_dir.mkdir(parents=True, exist_ok=True)
             for index, entry in enumerate(entries):
@@ -1145,6 +1175,8 @@ def command_extract_all(args: argparse.Namespace) -> int:
                     "original_size": entry.original_size,
                     "archived_size": entry.archived_size,
                 }
+                if index in hxv4_hashes:
+                    record.update(hxv4_hashes[index])
                 try:
                     result = extract_entry(
                         blob,

@@ -32,7 +32,7 @@ def classify(header: bytes) -> str:
     if header[:4] == b'XBND':
         return 'XBND bundle'
     if header[:4] == b'PSB\x00':
-        return 'PSB (Painter Scribble)'
+        return 'PSB (Painter Scribble/.pimg)'
     if header[:4] == b'mdf\x00':
         return 'MDF container (zlib compressed)'
     if header[:7] == b'TJS/4s0':
@@ -61,10 +61,12 @@ def classify(header: bytes) -> str:
     return f'Unknown ({header[:16].hex(" ")})'
 
 
-def scan_directory(base: str, output_file: str | None = None) -> int:
+def scan_directory(base: str, output_file: str | None = None, layout: str = "nested") -> int:
     """Scan a base directory for .bin files and classify by header.
 
-    Expects directory layout: <base>/<name>/<name>/*.bin
+    Supports two layouts:
+      nested: <base>/<name>/<name>/*.bin  (legacy)
+      flat:   <base>/<name>/*.bin        (xp3_inspect.py extract-all output)
     Returns the grand total of scanned files.
     """
     lines: list[str] = []
@@ -74,11 +76,18 @@ def scan_directory(base: str, output_file: str | None = None) -> int:
         dirpath = os.path.join(base, dirname)
         if not os.path.isdir(dirpath):
             continue
-        subdir = os.path.join(dirpath, dirname)
-        if not os.path.isdir(subdir):
-            continue
 
-        bins = glob.glob(os.path.join(subdir, '*.bin'))
+        if layout == "nested":
+            subdir = os.path.join(dirpath, dirname)
+            if not os.path.isdir(subdir):
+                continue
+            bins = glob.glob(os.path.join(subdir, '*.bin'))
+        elif layout == "flat":
+            subdir = dirpath
+            bins = glob.glob(os.path.join(subdir, '*.bin'))
+        else:
+            raise ValueError(f"Unknown layout: {layout}")
+
         if not bins:
             continue
 
@@ -132,6 +141,13 @@ def main():
         default=None,
         help='Optional output file path to save scan results',
     )
+    parser.add_argument(
+        '--layout',
+        choices=('nested', 'flat'),
+        default='nested',
+        help='Directory layout: nested=<base>/<name>/<name>/*.bin (legacy), '
+             'flat=<base>/<name>/*.bin (xp3_inspect.py extract-all output)',
+    )
     args = parser.parse_args()
 
     base = args.input
@@ -139,7 +155,7 @@ def main():
         print(f'Error: input directory not found: {base}', file=sys.stderr)
         sys.exit(1)
 
-    scan_directory(base, args.output)
+    scan_directory(base, args.output, layout=args.layout)
 
 
 if __name__ == '__main__':
