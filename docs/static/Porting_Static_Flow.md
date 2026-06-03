@@ -9,7 +9,7 @@
 | 项目 | 预期 |
 |------|------|
 | 主程序 | Windows PE，资源表中有 `RCDATA/STARTUP.TJS`、`RCDATA/BOOTSTRAP`、可选 `RCDATA/PLUGIN` 和 `TEXT/127` |
-| bres salt | 默认可从主程序或指定 salt source 的初始化汇编中定位；packed 原始 EXE 可回退到 `forcedataxp3` / `TEXT` / `V2Link` 数据邻域；也可显式用 PE RVA / 文件偏移读取 0x2000 字节 |
+| bres salt | 默认可从 `--exe` 的初始化汇编中定位；packed 原始 EXE 可回退到 `forcedataxp3` / `TEXT` / `V2Link` 数据邻域；也可显式用 PE RVA / 文件偏移读取 0x2000 字节 |
 | STARTUP.TJS | 用 `TEXT/127` path key + salt 解密后为 `TJS2100\0` |
 | BOOTSTRAP | 解密后跳过 8 字节 header，剩余数据可 zlib 解压为 PE DLL |
 | DLL 配置表 | 默认 RVA `0x80E38`，包含 `UNIQUE` 和 `WARNING` |
@@ -217,13 +217,12 @@ extract-all manifest.jsonl 中 status != ok 的行:
 
 | 参数 | 用途 |
 |------|------|
-| `--exe` | 提供 PE Resources 的目标游戏 EXE |
+| `--exe` | 提供 PE Resources 的目标游戏 EXE，并作为 bres salt 自动定位、`--salt-rva`、`--salt-file-offset` 的读取来源 |
 | `--work-dir` | 中间文件和 `drip_program.json` 输出目录 |
 | `--out` | 指定 `drip_program.json` 输出路径 |
 | `--salt-file` | 直接指定 0x2000 字节 bres salt 文件 |
-| `--salt-source-exe` / `--runtime-exe` | 只用于读取 salt 的 PE 文件；默认在该 PE 中扫描 salt 初始化赋值和 packed 数据邻域 |
-| `--salt-rva` | 显式从 salt source PE RVA 读取 salt |
-| `--salt-file-offset` | 从 salt source 文件偏移读取 salt |
+| `--salt-rva` | 显式从 `--exe` 的 PE RVA 读取 salt |
+| `--salt-file-offset` | 从 `--exe` 的文件偏移读取 salt |
 | `--table-rva` | BOOTSTRAP DLL 配置表 RVA，默认 `0x80E38` |
 | `--startup-resource` / `--bootstrap-resource` / `--text-resource` | 目标 PE 中的资源名覆盖 |
 | `--bootstrap-zlib-offset` | BOOTSTRAP 明文中 zlib payload 的起始偏移，默认 `8` |

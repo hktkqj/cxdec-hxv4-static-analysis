@@ -1,153 +1,453 @@
 //------------------------------------------------------------
-// 010 Editor Binary Template: KiriKiri PSB Layer Image (.pimg)
+// 010 Editor Binary Template: M2/Kirikiri PSB container
 //
-// 这是 KiriKiri VN 引擎自定义的 "PSB\0" 图层图像格式
-// 由 psbfile.dll 解析，为 TJS 层提供图层树结构
+// Reference implementation:
+//   progray/krkrpsb, src/psb.hpp + src/psb.cpp
 //
-// 区别于 Adobe PSB ("8BPS"):
-//   - Magic: "PSB\0" (非 "8BPS")
-//   - 自定义 44-byte 文件头
-//   - 紧凑游程编码的图层定义
-//   - 内嵌 TLG 图像流
+// Target sample:
+//   F:\SteamLibrary\steamapps\common\sanoba witch\analysis\
+//     extract_20260526\adult_evimage\entry_00001_5001.bin
 //
-// 样本: サノバウィッチ adult_evimage/
-//   #1: 1786x1810, 522 entries
-//   #3:  720x728,  410 entries
-//   #4: 5506x5573, 1923 entries
-//   #5:  921x932,  431 entries
-//   #11: 649x656,  403 entries
+// This is not Adobe Photoshop PSB ("8BPS").  It is an M2 PSB
+// object/resource container used by KRKR psbfile.dll.  The file
+// starts with "PSB\0" and then a table of section offsets.
 //
-// 头字段已通过 5 个样本交叉验证确认
+// Confirmed target values:
+//   version              = 3
+//   offset_names         = 0x00002C
+//   offset_entries       = 0x00020A
+//   offset_strings       = 0x0006FA
+//   offset_strings_data  = 0x000712
+//   offset_chunk_offsets = 0x000751
+//   offset_chunk_lengths = 0x000793
+//   offset_chunk_data    = 0x0007D8
+//   resource chunks      = 21 TLG5.0 streams
 //============================================================
 
 LittleEndian();
 
-//============================================================
-// Header — 44 bytes (0x2C)
+//------------------------------------------------------------
+// Helpers for PSB packed arrays
 //
-// offset 0x08 & 0x0C = 0x2C (常数, 所有样本中一致)
-// 这是 psbfile.dll 读取文件的第一层结构
-//============================================================
+// krkrpsb psb_array_t format:
+//   count_type  : 0x0D..0x14, byte width = count_type - 0x0C
+//   count       : little-endian integer using that byte width
+//   entry_type  : 0x0D..0x14, byte width = entry_type - 0x0C
+//   entries     : count fixed-width little-endian integers
+//------------------------------------------------------------
+uint64 ReadUIntNAt(int64 off, int n)
+{
+    local int64 save = FTell();
+    local uint64 v = 0;
+    local int i;
+
+    FSeek(off);
+    for (i = 0; i < n; i++)
+        v |= ((uint64)ReadByte()) << (i * 8);
+
+    FSeek(save);
+    return v;
+}
+
+uint32 PsbArrayCount(int64 off)
+{
+    local int64 save = FTell();
+    local byte count_type;
+    local int count_bytes;
+    local uint32 count;
+
+    FSeek(off);
+    count_type = ReadByte();
+    count_bytes = count_type - 0x0C;
+    count = (uint32)ReadUIntNAt(off + 1, count_bytes);
+
+    FSeek(save);
+    return count;
+}
+
+uint32 PsbArrayEntryBytes(int64 off)
+{
+    local int64 save = FTell();
+    local byte count_type;
+    local int count_bytes;
+    local byte entry_type;
+
+    FSeek(off);
+    count_type = ReadByte();
+    count_bytes = count_type - 0x0C;
+    FSeek(off + 1 + count_bytes);
+    entry_type = ReadByte();
+
+    FSeek(save);
+    return entry_type - 0x0C;
+}
+
+uint64 PsbArrayValue(int64 off, uint32 index)
+{
+    local int64 save = FTell();
+    local byte count_type;
+    local int count_bytes;
+    local byte entry_type;
+    local int entry_bytes;
+    local int64 data_off;
+    local uint64 v;
+
+    FSeek(off);
+    count_type = ReadByte();
+    count_bytes = count_type - 0x0C;
+    FSeek(off + 1 + count_bytes);
+    entry_type = ReadByte();
+    entry_bytes = entry_type - 0x0C;
+    data_off = off + 1 + count_bytes + 1;
+
+    v = ReadUIntNAt(data_off + index * entry_bytes, entry_bytes);
+    FSeek(save);
+    return v;
+}
+
+int IsTLG5At(int64 off)
+{
+    local int64 save = FTell();
+    local int ok = 0;
+
+    if (off <= FileSize() - 6) {
+        FSeek(off);
+        ok = ReadByte() == 0x54 &&
+             ReadByte() == 0x4C &&
+             ReadByte() == 0x47 &&
+             ReadByte() == 0x35 &&
+             ReadByte() == 0x2E &&
+             ReadByte() == 0x30;
+    }
+
+    FSeek(save);
+    return ok;
+}
+
+//------------------------------------------------------------
+// Top-level PSB header from krkrpsb's PSBHDR
+//------------------------------------------------------------
 typedef struct {
-    char     magic[4]  <comment="Magic: 'PSB\\0'">;
-    uint32   version   <comment="Format version: 3">;
-    uint32   hdr_size  <comment="Header size: 0x2C (44)">;
-    uint32   data_base <comment="Data base: 0x2C (44)">;
+    char     signature[4]          <comment="'PSB\\0'">;
+    uint16   version               <comment="Observed: 3 for this file">;
+    uint16   encrypt               <comment="0 = plain section tables">;
+    uint32   offset_encrypt        <format=hex,
+                                    comment="Usually equals offset_names when plain">;
+    uint32   offset_names          <format=hex,
+                                    comment="Start of 3 packed arrays for name b-tree">;
+    uint32   offset_strings        <format=hex,
+                                    comment="Packed array of offsets into strings_data">;
+    uint32   offset_strings_data   <format=hex,
+                                    comment="Null-terminated string pool">;
+    uint32   offset_chunk_offsets  <format=hex,
+                                    comment="Packed array of resource offsets relative to chunk_data">;
+    uint32   offset_chunk_lengths  <format=hex,
+                                    comment="Packed array of resource byte lengths">;
+    uint32   offset_chunk_data     <format=hex,
+                                    comment="Resource data base; first TLG5 starts here">;
+    uint32   offset_entries        <format=hex,
+                                    comment="Root object/value stream">;
+} PSB_Header;
 
-    uint32   canvas_w  <comment="Canvas width in pixels">;
-    uint32   canvas_h  <comment="Canvas height in pixels">;
-
-    uint32   bound_w   <comment="Max right bound across all layers">;
-    uint32   bound_h   <comment="Max bottom bound across all layers">;
-
-    uint32   page_dim  <comment="Page dimension (possibly aligned)">;
-
-    uint32   entry_cnt <comment="Total number of layers + groups">;
-
-    uint16   aux_a     <format=hex>;
-    uint16   aux_b     <format=hex>;
-} PIMG_Hdr;
-
-//============================================================
-// 80-byte index / palette / remap table (0x30 - 0x7F)
-//
-// 固定80字节，前约26字节为连续序列 0x00..0x19
-// 后续按文件而变化。psbfile.dll 用于 layer_id 索引映射
-//
-// 样本验证 (entry_00011):
-//   0x30: 00..19 00..00 00..00 05 06 07 0D 15..1C 02 08 01 02 03 0E
-//   0x80: 14 0A 0D 10 13 16 19 1C 1F 22 00 00 00 00 00 00 ← 开始不同模式
-//============================================================
 typedef struct {
-    byte tbl[80] <format=hex, comment="80-byte layer_id remap / index table">;
-} PIMG_IdxTable;
+    byte count_type               <format=hex,
+                                   comment="0x0D..0x14, count byte width = type - 0x0C">;
+} PSB_ArrayCountType;
 
-//============================================================
-// 前缀标记 — 4 bytes, 位于 offset 0x2C
-//
-// "0D XX 0D 01" (多数样本)
-// "0E XX 01 0E" (entry_00004, 最大的那个文件)
-//============================================================
 typedef struct {
-    byte m1 <format=hex, comment="Prefix marker 1 (0D or 0E)">;
-    byte v1 <format=hex>;
-    byte m2 <format=hex, comment="Prefix marker 2 (0D or 01)">;
-    byte v2 <format=hex>;
-} PIMG_Prefix;
+    byte count0                   <format=hex>;
+} PSB_Count1;
 
-//============================================================
-// Layer definition marker: 0D XX 0D 00 68 6A 6B 6C
-//
-// 该标记分隔"图层定义区"和"属性表区"
-// tab_sig = 0x6C6B6A68 = "h j k l" 在所有样本中不变
-//============================================================
 typedef struct {
-    byte     m1       <format=hex, comment="= 0x0D">;
-    byte     v1       <format=hex>;
-    byte     m2       <format=hex, comment="= 0x0D">;
-    byte     v2       <format=hex, comment="= 0x00">;
-    uint32   tab_sig  <format=hex, comment="Table sig: 68 6A 6B 6C (constant)">;
-} PIMG_LayerEnd;
+    byte count0                   <format=hex>;
+    byte count1                   <format=hex>;
+} PSB_Count2;
 
-//============================================================
-// Root — 使用静态偏移量，无 FSeek/ReadByte 调用
-//
-// 文件布局 (以 entry_00011 为例):
-//   0x0000: Header       (44 bytes = 0x2C)
-//   0x002C: Prefix       (4 bytes)
-//   0x0030: Index tbl    (80 bytes = 0x50)
-//   0x0080: Layer data   (variable, 116 bytes in this sample)
-//   0x00F4: LayerEnd mkr (0D C5 0D 00 68 6A 6B 6C)
-//   after:  Property table + TLG index + TLG image stream
-//
-// 图层定义区边界通过扫描固定签名 68 6A 6B 6C 确定
-// 搜索范围: hdr.entry_cnt * 96 bytes (足够覆盖最坏情况)
-//============================================================
+typedef struct {
+    byte count0                   <format=hex>;
+    byte count1                   <format=hex>;
+    byte count2                   <format=hex>;
+} PSB_Count3;
 
-// 第一步: 先读固定部分, 计算图层数据长度
-PIMG_Hdr     hdr;
-PIMG_Prefix  prefix;
-PIMG_IdxTable idx;
+typedef struct {
+    byte count0                   <format=hex>;
+    byte count1                   <format=hex>;
+    byte count2                   <format=hex>;
+    byte count3                   <format=hex>;
+} PSB_Count4;
 
-// 第二步: 图层定义区 — 扫描到 tab_sig = 68 6A 6B 6C
-// 从当前位置开始扫描
-local int64 ld_start = FTell();
-local int64 ld_end   = ld_start;
-local int64 ld_max   = ld_start + hdr.entry_cnt * 96;
-local int32 found    = 0;
-local byte  b3       = 0;
-local uint32 sig     = 0;
+typedef struct {
+    byte entry_type               <format=hex,
+                                   comment="0x0D..0x14, entry byte width = type - 0x0C">;
+} PSB_ArrayEntryType;
 
-if (ld_max > FileSize() - 8)
-    ld_max = FileSize() - 8;
+typedef struct {
+    local int64  array_start = FTell();
+    local uint32 count = 0;
+    local int    count_bytes;
+    local int    entry_bytes;
+    local int64  entries_size;
+    local int64  entries_end;
+    local int    valid = 1;
 
-while (ld_end < ld_max && found == 0) {
-    FSeek(ld_end + 3);
-    b3 = ReadByte();
-    if (b3 == 0x00) {
-        FSeek(ld_end + 4);
-        sig = ReadUInt();
-        if (sig == 0x6C6B6A68) {
-            found = 1;
+    PSB_ArrayCountType count_type;
+
+    // Validate count_type: must be in range 0x0D .. 0x14
+    if (count_type.count_type < 0x0D || count_type.count_type > 0x14) {
+        Warning("PSB_PackedArray: invalid count_type 0x%02X at 0x%08LX",
+                count_type.count_type, array_start);
+        valid = 0;
+    }
+
+    if (valid) {
+        count_bytes = count_type.count_type - 0x0C;
+
+        if (count_bytes == 1)
+            PSB_Count1 count_raw1;
+        else if (count_bytes == 2)
+            PSB_Count2 count_raw2;
+        else if (count_bytes == 3)
+            PSB_Count3 count_raw3;
+        else if (count_bytes == 4)
+            PSB_Count4 count_raw4;
+
+        PSB_ArrayEntryType entry_type;
+        entry_bytes = entry_type.entry_type - 0x0C;
+
+        // Validate entry_type range as well
+        if (entry_type.entry_type < 0x0D || entry_type.entry_type > 0x14) {
+            Warning("PSB_PackedArray: invalid entry_type 0x%02X at 0x%08LX",
+                    entry_type.entry_type, array_start);
+            valid = 0;
         }
     }
-    if (found == 0)
-        ld_end = ld_end + 1;
+
+    if (valid) {
+        count = PsbArrayCount(array_start);
+        entries_size = count;
+        entries_size = entries_size * entry_bytes;
+        entries_end = FTell() + entries_size;
+        if (entries_end > FileSize())
+            entries_end = FileSize();
+        FSeek(entries_end);
+    } else {
+        return -1;
+    }
+} PSB_PackedArray;
+
+typedef struct {
+    PSB_PackedArray str1          <comment="krkrpsb psb_t::str1">;
+    PSB_PackedArray str2          <comment="krkrpsb psb_t::str2">;
+    PSB_PackedArray str3          <comment="krkrpsb psb_t::str3">;
+} PSB_NameBTree;
+
+//------------------------------------------------------------
+// PSB value type tags from krkrpsb psb_value_t::type_t
+//------------------------------------------------------------
+enum <byte> PSB_ValueType {
+    PSB_TYPE_NONE        = 0x00,
+    PSB_TYPE_NULL        = 0x01,
+    PSB_TYPE_FALSE       = 0x02,
+    PSB_TYPE_TRUE        = 0x03,
+    PSB_TYPE_NUMBER_N0   = 0x04,
+    PSB_TYPE_NUMBER_N1   = 0x05,
+    PSB_TYPE_NUMBER_N2   = 0x06,
+    PSB_TYPE_NUMBER_N3   = 0x07,
+    PSB_TYPE_NUMBER_N4   = 0x08,
+    PSB_TYPE_NUMBER_N5   = 0x09,
+    PSB_TYPE_NUMBER_N6   = 0x0A,
+    PSB_TYPE_NUMBER_N7   = 0x0B,
+    PSB_TYPE_NUMBER_N8   = 0x0C,
+    PSB_TYPE_ARRAY_N1    = 0x0D,
+    PSB_TYPE_ARRAY_N2    = 0x0E,
+    PSB_TYPE_ARRAY_N3    = 0x0F,
+    PSB_TYPE_ARRAY_N4    = 0x10,
+    PSB_TYPE_ARRAY_N5    = 0x11,
+    PSB_TYPE_ARRAY_N6    = 0x12,
+    PSB_TYPE_ARRAY_N7    = 0x13,
+    PSB_TYPE_ARRAY_N8    = 0x14,
+    PSB_TYPE_STRING_N1   = 0x15,
+    PSB_TYPE_STRING_N2   = 0x16,
+    PSB_TYPE_STRING_N3   = 0x17,
+    PSB_TYPE_STRING_N4   = 0x18,
+    PSB_TYPE_RESOURCE_N1 = 0x19,
+    PSB_TYPE_RESOURCE_N2 = 0x1A,
+    PSB_TYPE_RESOURCE_N3 = 0x1B,
+    PSB_TYPE_RESOURCE_N4 = 0x1C,
+    PSB_TYPE_FLOAT0      = 0x1D,
+    PSB_TYPE_FLOAT       = 0x1E,
+    PSB_TYPE_DOUBLE      = 0x1F,
+    PSB_TYPE_COLLECTION  = 0x20,
+    PSB_TYPE_OBJECTS     = 0x21
+};
+
+//------------------------------------------------------------
+// TLG5 stream header embedded as PSB resources
+//------------------------------------------------------------
+typedef struct {
+    char     magic[7]       <comment="'TLG5.0\\0'">;
+    char     raw_marker[4]  <comment="'raw\\x1A'">;
+    byte     colors         <comment="Usually 4">;
+    uint32   width          <comment="TLG image width">;
+    uint32   height         <comment="TLG image height">;
+    uint32   block_height   <comment="Rows per compressed block">;
+} TLG5_Header;
+
+local int64 g_chunk_end;
+
+typedef struct {
+    local uint32 block_count = 0;
+    local int payload_size;
+    local int64 payload_avail;
+    local int64 block_table_size;
+    local int64 block_table_end;
+    local int64 payload_end;
+
+    TLG5_Header header;
+
+    if (header.block_height != 0)
+        block_count = (header.height + header.block_height - 1) / header.block_height;
+
+    if (block_count > 0 && block_count < 0x100000) {
+        block_table_size = block_count * 4;
+        block_table_end = FTell() + block_table_size;
+        if (block_table_end > g_chunk_end)
+            block_table_end = g_chunk_end;
+        if (block_table_end > FileSize())
+            block_table_end = FileSize();
+        FSeek(block_table_end);
+    }
+
+    payload_size = g_chunk_end - FTell();
+    payload_avail = FileSize() - FTell();
+    if (payload_size > payload_avail)
+        payload_size = payload_avail;
+
+    if (payload_size > 0) {
+        payload_end = FTell() + payload_size;
+        FSeek(payload_end);
+    }
+} TLG5_Resource;
+
+//------------------------------------------------------------
+// Root
+//------------------------------------------------------------
+PSB_Header hdr;
+local int section_size;
+
+if (hdr.signature[0] != 'P' || hdr.signature[1] != 'S' ||
+    hdr.signature[2] != 'B' || hdr.signature[3] != 0) {
+    Warning("This file does not start with PSB\\0.");
 }
 
-FSeek(ld_start);
-if (ld_end > ld_start) {
-    byte layer_data[ld_end - ld_start] <format=hex,
-        comment="Layer definitions (compact RLE-encoded, parsed by psbfile.dll)">;
+// Version 3 files in this sample set have a 4-byte gap between
+// sizeof(PSBHDR)=0x28 and offset_names=0x2C.  krkrpsb does not
+// interpret it during normal object/resource parsing.
+if (hdr.offset_names > FTell()) {
+    section_size = hdr.offset_names - FTell();
+    if (section_size > FileSize() - FTell())
+        section_size = FileSize() - FTell();
+    if (section_size > 0)
+        FSeek(FTell() + section_size);
 }
 
-// 第三步: LayerEnd 标记
-FSeek(ld_end);
-PIMG_LayerEnd layer_end;
+//------------------------------------------------------------
+// Names table: three packed arrays used as a compact b-tree.
+// krkrpsb reconstructs a key name by walking str3 -> str2 -> str1.
+//------------------------------------------------------------
+FSeek(hdr.offset_names);
+PSB_NameBTree names;
 
-// 第四步: 剩余数据
-local int64 tail = FileSize() - FTell();
-if (tail > 0) {
-    byte tail_data[tail] <format=hex,
-        comment="Property lookup table + TLG index + TLG image data stream">;
+//------------------------------------------------------------
+// Root entries object/value stream.
+// Full recursive expansion is possible, but 010 is mainly used here
+// to expose the binary sections and resource chunks without changing
+// the file.  The first byte should usually be 0x21 (TYPE_OBJECTS).
+//------------------------------------------------------------
+FSeek(hdr.offset_entries);
+PSB_ValueType root_type <comment="Root value tag; usually TYPE_OBJECTS (0x21)">;
+if (hdr.offset_strings > FTell()) {
+    section_size = hdr.offset_strings - FTell();
+    if (section_size > FileSize() - FTell())
+        section_size = FileSize() - FTell();
+    if (section_size > 0)
+        FSeek(FTell() + section_size);
+}
+
+//------------------------------------------------------------
+// String table and string pool.
+// In this target the string pool is:
+//   AA AB AC AD AE AF AG BA ... CG
+//------------------------------------------------------------
+FSeek(hdr.offset_strings);
+PSB_PackedArray string_offsets <comment="Offsets into strings_data">;
+
+FSeek(hdr.offset_strings_data);
+if (hdr.offset_chunk_offsets > FTell()) {
+    section_size = hdr.offset_chunk_offsets - FTell();
+    if (section_size > FileSize() - FTell())
+        section_size = FileSize() - FTell();
+    if (section_size > 0)
+        FSeek(FTell() + section_size);
+}
+
+//------------------------------------------------------------
+// Resource tables.  Resource_N values index these arrays:
+//   resource_ptr = offset_chunk_data + chunk_offsets[index]
+//   resource_len = chunk_lengths[index]
+//------------------------------------------------------------
+FSeek(hdr.offset_chunk_offsets);
+local int64 chunk_offsets_array_off = FTell();
+PSB_PackedArray chunk_offsets <comment="Resource offsets relative to chunk_data">;
+
+FSeek(hdr.offset_chunk_lengths);
+local int64 chunk_lengths_array_off = FTell();
+PSB_PackedArray chunk_lengths <comment="Resource byte lengths">;
+
+//------------------------------------------------------------
+// Resource chunks.  For this pimg all resources are TLG5.0 streams.
+// Some chunks are followed by alignment/padding bytes, so this uses
+// chunk_lengths rather than the next TLG magic to define each payload.
+//------------------------------------------------------------
+local uint32 chunk_count = PsbArrayCount(chunk_offsets_array_off);
+local uint32 chunk_i;
+local int64  chunk_start;
+local int64  chunk_next_start;
+local uint64 chunk_rel;
+local uint64 chunk_len;
+local int64  chunk_len_i64;
+local int    chunk_len_safe;
+local int64  padding_len;
+local int    padding_size;
+
+for (chunk_i = 0; chunk_i < chunk_count; chunk_i++) {
+    chunk_rel = PsbArrayValue(chunk_offsets_array_off, chunk_i);
+    chunk_len = PsbArrayValue(chunk_lengths_array_off, chunk_i);
+    chunk_len_i64 = chunk_len;
+    chunk_start = hdr.offset_chunk_data + chunk_rel;
+    g_chunk_end = chunk_start + chunk_len_i64;
+
+    FSeek(chunk_start);
+    if (IsTLG5At(chunk_start)) {
+        TLG5_Resource resource;
+    } else {
+        chunk_len_safe = chunk_len_i64;
+        if (chunk_len_safe > FileSize() - FTell())
+            chunk_len_safe = FileSize() - FTell();
+        if (chunk_len_safe > 0)
+            FSeek(FTell() + chunk_len_safe);
+    }
+
+    if (chunk_i + 1 < chunk_count)
+        chunk_next_start = hdr.offset_chunk_data +
+            PsbArrayValue(chunk_offsets_array_off, chunk_i + 1);
+    else
+        chunk_next_start = FileSize();
+
+    padding_len = chunk_next_start - g_chunk_end;
+    if (padding_len > 0) {
+        padding_size = padding_len;
+        FSeek(g_chunk_end);
+        FSeek(FTell() + padding_size);
+    }
 }

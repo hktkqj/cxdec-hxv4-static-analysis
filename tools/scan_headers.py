@@ -26,7 +26,7 @@ def classify(header: bytes) -> str:
     if header[:4] == b'AMV1':
         return 'AMV video (.amv)'
     if header[:2] == b'MZ':
-        return 'PE/DLL executable'
+        return 'PE/DLL executable (.exe/.dll)'
     if header[:4] == b'\x1b\x4c\x4a\x01':
         return 'KAG scenario (.ks)'
     if header[:4] == b'XBND':

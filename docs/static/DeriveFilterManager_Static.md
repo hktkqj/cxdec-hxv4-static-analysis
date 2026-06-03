@@ -91,22 +91,13 @@ data.xp3: checked=20 failed=0 unresolved_filter=0 limited_to=20
 python src\static_extract\static_xp3_recover.py --exe path\to\game.exe
 ```
 
-`static_xp3_recover.py` 可以把资源来源 EXE 和 salt 来源程序分开指定。默认 `--exe` 同时提供 PE Resources，并通过汇编赋值特征或 packed 数据邻域自动定位 salt；如果需要从另一份运行时程序、脱壳程序或 dump 修复 PE 中自动定位 salt，可使用：
-
-```powershell
-python src\static_extract\static_xp3_recover.py `
-  --exe path\to\game.exe `
-  --runtime-exe path\to\salt_source.exe
-```
-
-其中 `--runtime-exe` 是 `--salt-source-exe` 的别名，只影响 salt 提取，不影响 `STARTUP.TJS` / `BOOTSTRAP` 的 PE Resource 来源。
+`static_xp3_recover.py` 现在统一使用 `--exe` 作为资源和 salt 来源。默认 `--exe` 同时提供 PE Resources，并通过汇编赋值特征或 packed 数据邻域自动定位 salt。
 
 如果已知 salt 的直接文件偏移，可绕过 PE RVA 映射：
 
 ```powershell
 python src\static_extract\static_xp3_recover.py `
   --exe path\to\game.exe `
-  --runtime-exe path\to\salt_source.exe `
   --salt-file-offset 0x2E3200
 ```
 
@@ -115,7 +106,6 @@ salt 读取优先级为：
 ```text
 显式 --salt-file
   -> 显式 --salt-rva / --salt-file-offset
-  -> 指定 --runtime-exe / --salt-source-exe 的自动定位
   -> 默认 --exe 的自动定位
 ```
 
@@ -500,13 +490,12 @@ sub_100157D0(manager + 8, archive_text_utf16le, byte_len, archive_seed)
 
 | 参数 | 说明 |
 |------|------|
-| `--exe` | 目标游戏 EXE，提供 PE Resources |
+| `--exe` | 目标游戏 EXE，提供 PE Resources，并作为 bres salt 自动定位、`--salt-rva`、`--salt-file-offset` 的读取来源 |
 | `--work-dir` | 输出目录；跨游戏分析时建议使用目标游戏目录下的 `temp` |
 | `--out` | 指定 `drip_program.json` 输出路径 |
 | `--salt-file` | 直接指定 0x2000 字节 bres salt |
-| `--salt-source-exe` / `--runtime-exe` | 只用于 salt 提取的 PE 文件；未指定 `--salt-rva` / `--salt-file-offset` 时也会在该 PE 中自动扫描 salt 初始化赋值和 packed 数据邻域 |
-| `--salt-rva` | 显式从 salt source 的 PE RVA 读取 salt |
-| `--salt-file-offset` | 从 salt source 的文件偏移读取 salt |
+| `--salt-rva` | 显式从 `--exe` 的 PE RVA 读取 salt |
+| `--salt-file-offset` | 从 `--exe` 的文件偏移读取 salt |
 | `--table-rva` | BOOTSTRAP DLL 配置表 RVA，默认 `0x80E38` |
 | `--startup-resource` / `--bootstrap-resource` / `--text-resource` | 覆盖目标 PE 中的资源名，默认 `10/STARTUP.TJS`、`10/BOOTSTRAP`、`TEXT/127` |
 | `--bootstrap-zlib-offset` | BOOTSTRAP 明文中 zlib payload 的起始偏移，默认 `8` |
@@ -621,7 +610,7 @@ python src\static_extract\recover_bres_salt.py `
   --out bres_salt.bin
 ```
 
-当前主流程脚本默认不再自动读取仓库根目录中的 salt 文件，也不再使用固定 salt RVA，避免跨游戏误用旧样本。默认行为是从 `--exe` 或 `--runtime-exe` 指定的 PE 中扫描初始化汇编和 packed 数据邻域定位 salt。
+当前主流程脚本默认不再自动读取仓库根目录中的 salt 文件，也不再使用固定 salt RVA，避免跨游戏误用旧样本。默认行为是从 `--exe` 指定的 PE 中扫描初始化汇编和 packed 数据邻域定位 salt。
 
 如果需要使用 `recover_bres_salt.py` 先导出的文件，必须显式传入：
 

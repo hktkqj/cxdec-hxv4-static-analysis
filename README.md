@@ -162,21 +162,19 @@ docs/
 python src\static_extract\static_xp3_recover.py --exe path\to\game.exe
 ```
 
-显式指定 salt 来源程序和 PE RVA：
+显式指定 salt PE RVA：
 
 ```powershell
 python src\static_extract\static_xp3_recover.py `
   --exe path\to\game.exe `
-  --runtime-exe "F:\SteamLibrary\steamapps\common\sanoba witch\SabbatOfTheWitch.exe" `
   --salt-rva 0x........
 ```
 
-指定 salt 来源程序和文件偏移：
+指定 salt 文件偏移：
 
 ```powershell
 python src\static_extract\static_xp3_recover.py `
   --exe path\to\game.exe `
-  --runtime-exe "F:\SteamLibrary\steamapps\common\sanoba witch\SabbatOfTheWitch.exe" `
   --salt-file-offset 0x2E3200
 ```
 
@@ -231,6 +229,8 @@ python src\common\xp3_inspect.py extract-all out\scn `
 ## 环境要求
 
 - Python 3.9+
+  - PyCryptodome 用于 SipHash 和 BLAKE2s 实现
+  - Pillow 用于CG合成
 - PyCryptodome
 - .NET 8 x86 runtime / SDK，用于运行 `tools/FilterManagerDerive`
 - Windows 环境；纯静态分析不需要启动游戏，动态 dump 工具需要 Windows 调试和进程读取 API
@@ -238,6 +238,8 @@ python src\common\xp3_inspect.py extract-all out\scn `
 ## 第三方项目
 
 [crate-1556/tjs2-decompiler](https://github.com/crate-1556/tjs2-decompiler) 是面向 Kirikiri / 吉里吉里引擎的 TJS2（TJS2100）字节码反编译器，可将编译后的 TJS2 字节码转换为可读、可分析的 TJS2 源码，并支持单文件、目录批量、递归目录、反汇编和文件信息查看等用法。本仓库曾使用 `tools/tjs2-decompiler` 作为脚本逻辑分析辅助工具。
+
+[vn-tools/tlg2png](https://github.com/vn-tools/tlg2png) Converts TLG images to PNG. TLG images are used by games based on Kirikiri engine.
 
 ## AI 辅助创作、分析声明
 

@@ -48,30 +48,37 @@ def build_parser(repo_root: Path) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Recover XP3 keys for this bres/BOOTSTRAP/Hxv4 encryption family from static files."
     )
-    parser.add_argument("--exe", type=Path, required=True, help="target PE file that provides game resources")
-    parser.add_argument("--work-dir", type=Path, default=repo_root / "data" / "static_recover")
-    parser.add_argument("--out", type=Path, help="output drip_program.json path; defaults to work-dir/drip_program.json")
+    parser.add_argument(
+        "--exe",
+        type=Path,
+        required=True,
+        help="target game EXE; supplies resources and is also used for bres salt lookup",
+    )
+    parser.add_argument(
+        "--work-dir",
+        type=Path,
+        default=repo_root / "data" / "static_recover",
+        help="directory for recovered intermediate files; default: data/static_recover",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        help="output drip_program.json path; default: work-dir/drip_program.json",
+    )
     parser.add_argument(
         "--salt-file",
         type=Path,
-        help="read the 8192-byte bres salt from this file; overrides --salt-source-exe and --salt-rva",
-    )
-    parser.add_argument(
-        "--salt-source-exe",
-        "--runtime-exe",
-        dest="salt_source_exe",
-        type=Path,
-        help="program image used only for salt extraction; defaults to --exe when salt source is explicit",
+        help="read the 8192-byte bres salt from this file instead of locating it in --exe",
     )
     parser.add_argument(
         "--salt-rva",
         type=parse_int,
-        help="explicitly read salt from this PE RVA in the salt source",
+        help="read the bres salt from this RVA in --exe; accepts decimal or 0x-prefixed values",
     )
     parser.add_argument(
         "--salt-file-offset",
         type=parse_int,
-        help="read salt at an exact file offset from --salt-source-exe/--exe instead of mapping --salt-rva",
+        help="read the bres salt from this file offset in --exe; accepts decimal or 0x-prefixed values",
     )
     parser.add_argument(
         "--table-rva",
@@ -109,16 +116,37 @@ def build_parser(repo_root: Path) -> argparse.ArgumentParser:
         default=DEFAULT_BOOTSTRAP_ZLIB_OFFSET,
         help="bytes to skip before zlib-decompressing BOOTSTRAP payload; default 8",
     )
-    parser.add_argument("--dotnet-x86", type=Path)
-    parser.add_argument("--skip-derive", action="store_true")
-    parser.add_argument("--xp3", nargs="*", type=Path, help="optional XP3 archives to verify or extract")
-    parser.add_argument("--verify", action="store_true", help="verify XP3 entries with recovered filter state")
+    parser.add_argument(
+        "--dotnet-x86",
+        type=Path,
+        help="path to the x86 dotnet executable used by FilterManagerDerive; auto-detected when omitted",
+    )
+    parser.add_argument(
+        "--skip-derive",
+        action="store_true",
+        help="stop after recovering/decompressing resources and parsing DLL config; do not create drip_program.json",
+    )
+    parser.add_argument(
+        "--xp3",
+        nargs="*",
+        type=Path,
+        help="optional XP3 archives passed to xp3_inspect.py for verification or extraction after derivation",
+    )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="verify --xp3 archives with the recovered filter state after creating drip_program.json",
+    )
     parser.add_argument(
         "--verify-max-entries",
         type=int,
         help="when --verify is used, verify at most this many non-warning entries per XP3 archive",
     )
-    parser.add_argument("--extract-output", type=Path, help="optional output directory for xp3_inspect extract-all")
+    parser.add_argument(
+        "--extract-output",
+        type=Path,
+        help="output directory for xp3_inspect.py extract-all; requires --xp3 and a derived drip_program.json",
+    )
     parser.add_argument("--debug", action="store_true", help="print stage-level recovery diagnostics")
     return parser
 
@@ -152,12 +180,11 @@ def main(argv: list[str] | None = None) -> int:
     if startup_plain[:8] != b"TJS2100\0":
         if salt_args_are_explicit(args):
             raise ValueError("STARTUP.TJS did not decrypt to TJS2100")
-        salt_source_path = args.salt_source_exe or args.exe
-        for candidate in iter_auto_salt_candidates(PeImage(salt_source_path)):
+        for candidate in iter_auto_salt_candidates(PeImage(args.exe)):
             candidate_plain = decrypt_bres(startup_cipher, startup_key, candidate.salt)
             if candidate_plain[:8] == b"TJS2100\0":
                 salt = candidate.salt
-                salt_source = candidate.source_label(salt_source_path)
+                salt_source = candidate.source_label(args.exe)
                 startup_plain = candidate_plain
                 debug(args, f"auto salt matched: {salt_source}")
                 break

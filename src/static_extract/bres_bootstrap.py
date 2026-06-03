@@ -262,17 +262,15 @@ def load_salt(args: argparse.Namespace) -> tuple[bytes, str]:
         salt = salt_path.read_bytes()
         salt_source = str(salt_path)
     elif explicit_salt_source:
-        salt_source_path = args.salt_source_exe or args.exe
         if args.salt_file_offset is not None:
-            salt = read_file_offset(salt_source_path, args.salt_file_offset, SALT_SIZE)
-            salt_source = f"{salt_source_path}:file offset 0x{args.salt_file_offset:x}"
+            salt = read_file_offset(args.exe, args.salt_file_offset, SALT_SIZE)
+            salt_source = f"{args.exe}:file offset 0x{args.salt_file_offset:x}"
         else:
-            salt_image = PeImage(salt_source_path)
+            salt_image = PeImage(args.exe)
             salt = salt_image.read_rva(args.salt_rva, SALT_SIZE)
-            salt_source = f"{salt_source_path}:RVA 0x{args.salt_rva:x}"
+            salt_source = f"{args.exe}:RVA 0x{args.salt_rva:x}"
     else:
-        salt_source_path = args.salt_source_exe or args.exe
-        salt_image = PeImage(salt_source_path)
+        salt_image = PeImage(args.exe)
         candidates = iter_auto_salt_candidates(salt_image)
         if not candidates:
             raise ValueError(
@@ -281,7 +279,7 @@ def load_salt(args: argparse.Namespace) -> tuple[bytes, str]:
             )
         candidate = candidates[0]
         salt = candidate.salt
-        salt_source = candidate.source_label(salt_source_path)
+        salt_source = candidate.source_label(args.exe)
 
     if len(salt) != SALT_SIZE:
         raise ValueError(f"{salt_source} is {len(salt)} bytes; expected {SALT_SIZE}")
