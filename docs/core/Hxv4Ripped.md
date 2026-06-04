@@ -106,11 +106,12 @@ TJS 层调用:
 DLL 内 System_bootStrap_callback (0x1000EEB0):
   final_bootstrap = bootstrapPrefix + WARNING
   PARAMS          = ConfigTable["PARAMS"]
+  optional_seed   = 第 4 个参数为长度 >= 8 的 octet 时，经 SetArchiveSeedOctet 登记
 
   sub_10015630(manager + 8, final_bootstrap_utf16le, PARAMS)
     → 写入 hxv4_key、hxv4_nonce1、DripValueImpl VM 状态、holder_words、context_u32
 
-  sub_100157D0(manager + 8, UNIQUE_utf16le, archive_seed)
+  sub_100157D0(manager + 8, UNIQUE_utf16le, archive_seed_ptr_or_NULL)
     → 写入 hxv4_nonce0、更新 holder_words
 
   sub_100148B0(manager)
@@ -201,6 +202,7 @@ char __fastcall sub_10015630(
 ```
 
 **关键观察**：
+
 - **v15[8]** 是 sub_100141C0 输出的 32-byte scratch
 - **a1+12344** = a1+0x3038（hxv4_key 区域），**a1+12376** = a1+0x3058（hxv4_nonce1 区域）
 - XOR 作用域覆盖 hxv4_key 和 hxv4_nonce1 的全部 32 bytes，同时复制到 context_u32 尾部
@@ -245,21 +247,228 @@ PARAMS[20:22] → uint16 参数2
 **sub_10010550** — 核心 KDF：Keccak 海绵 + SHA3-512 派生：
 
 ```c
-// 简化流程：
-//   sub_1000D980: 分配 0x2000 byte Keccak 海绵状态
-//   sub_10015AB0(params): 海绵吸收 PARAMS
-//   sub_10013FC0(iv, 16): 海绵挤出 16B IV → 内部调用 Keccak-f[1600]
-//   sub_1001E5E0 → sub_1001E610: SHA3-512 多流 KDF(bootstrap, IV)
-//   sub_10015AB0(sha3_out, 64): 海绵吸收 SHA3 输出
-//   sub_10013FC0(manager+0x20, 0x2000): 挤出完整海绵状态
+/**
+ * ============================================================================
+ * sub_10010550 — 核心 KDF：Keccak 海绵 + SHA3-512 多流密钥派生
+ *
+ * RVA:  0x10010550
+ * Size: 0x205 bytes (141 instructions)
+ *
+ * 这是 Hxv4 加密体系中最核心的密码学引擎。它完成两阶段操作：
+ *   阶段 1: 海绵吸收 PARAMS → 挤出 IV → SHA3-512(bootstrap, IV) → 输出到调用者缓冲
+ *   阶段 2: 海绵再吸收 SHA3 输出 → 挤出完整 0x2000 字节海绵状态
+ *
+ * 调用约定: __thiscall (this 指针通过 ecx 传入)
+ * ============================================================================
+ */
+
+char __thiscall sub_10010550(
+    char   *this,    // [ebp-0x1FC] ecx传入 → Keccak 海绵上下文指针
+                     //   阶段 2 中 this+0x20 作为 0x2000 字节挤出的目标地址
+    void   *a2,      // [ebp-0x204] arg_0 → 输出缓冲区（接收 SHA3-512 结果）
+    size_t  Size,    // [ebp+0x22C] arg_4 → 输出长度，必须 ≤ 64 字节
+                     //   调用者 sub_100141C0 传入 0x20（32 字节）
+    int     a4,      // [ebp-0x200] arg_8 → 输入数据指针 #1（bootstrap UTF-16LE 字节）
+    int     a5,      // [ebp+0x234] arg_C → 输入数据长度 #1（bootstrap 字节数）
+    int     a6,      // [ebp-0x214] arg_10 → 输入数据指针 #2（PARAMS 22 字节配置参数）
+    int     a7       // [ebp+0x23C] arg_14 → 输入数据长度 #2（PARAMS = 22）
+)
+{
+    // ========================================================================
+    // 栈变量布局
+    // ========================================================================
+    void    *Block[3];  // [ebp-0x210] 3 个指针（实际只用 Block[0]）
+                        //   Block[0] = sub_1000D980 分配的 0x2000 字节海绵状态
+    void    *v9;        // [ebp-0x204] ← a2 的副本（输出缓冲区）
+    int      v10;       // [ebp-0x200] ← a4 的副本（bootstrap 指针）
+    char    *v11;       // [ebp-0x1FC] ← this 的副本（Keccak 上下文指针）
+    int      v12;       // [ebp-0x1F8] 海绵 rate 参数（每轮吸收/挤出前的字节数）
+    int      v13;       // [ebp-0x1F4] 循环计数器（两次调用均置 0）
+    _QWORD   v14[49];   // [ebp-0x1F0] 0xC0=192 字节工作区，两阶段均清零
+    char     v15;       // [ebp-0x61]  海绵定界符字节（padding delimiter）
+                        //   0x06 = SHA-3 函数族
+                        //   0x1F = SHAKE 可扩展输出函数族
+    _BYTE    Src[64];   // [ebp-0x60]  64 字节中间缓冲区
+                        //   阶段 1: SHA3-512 输出写入此处，再 memmove 到 v9
+                        //   阶段 2: 内容被 memset 清零
+    __int128 v17;       // [ebp-0x20]  16 字节 IV 暂存区（__int128 = 16 bytes）
+                        //   阶段 1: sub_10013FC0 挤出 16B IV 写入此处
+                        //   阶段 2: 被 xorps 清零
+    int      v18;       // [ebp-0x4]   异常处理 guard 变量
+
+    // ========================================================================
+    // 序言：保存参数、初始化
+    // ========================================================================
+    v11 = this;                              // 保存 Keccak 上下文指针
+    v9  = a2;                                // 保存输出缓冲区指针
+    v10 = a4;                                // 保存 bootstrap 数据指针
+    memset(Src, 0, sizeof(Src));             // 清零 64 字节中间缓冲
+    v17 = 0;                                 // 清零 16 字节 IV（xorps xmm0 + movq/mov）
+
+    // 安全检查：输出不能超过 64 字节
+    // 调用者 sub_100141C0 传入 Size=0x20 (32)，满足此约束
+    if ( Size > 0x40 )
+        return 0;
+
+    // ========================================================================
+    // 阶段 1: PARAMS 吸收 → IV 挤出 → SHA3-512 派生 → 结果输出
+    // ========================================================================
+
+    // --- 1a. 分配 0x2000 字节 Keccak 海绵状态块 ---
+    memset(Block, 0, sizeof(Block));         // 清零 12 字节 Block[3]
+    sub_1000D980((int *)Block, 0x2000u);    // 分配 0x2000 字节，Block[0] 指向该内存
+    // 海绵状态的内部结构（200 bytes × 内部并行度）：
+    //   Keccak-f[1600] 状态 = 1600 bits = 200 bytes = 25 lanes × 64 bits
+
+    // --- 1b. 初始化海绵参数：SHA-3 模式 ---
+    v12   = 144;                            // rate = 144 bytes = 1152 bits
+                                            //   这是 cSHAKE 的安全速率参数
+                                            //   容量 = 1600 - 1152 = 448 bits
+    v15   = 6;                              // delimiter = 0x06
+                                            //   在 SHA-3 标准中，0x06 表示 SHA3 哈希函数
+    v14[0] = 0;
+    qmemcpy(&v14[1], v14, 0xC0u);          // 将 v14[1..48] 全部清零（0xC0=192 字节）
+    v18   = 0;                              // SEH guard 置零
+    v13   = 0;                              // 循环计数器归零
+
+    // --- 1c. 海绵吸收 PARAMS（22 字节） ---
+    // sub_10015AB0 将数据按 8 字节 LE 块 XOR 入 Keccak 状态，满 rate 时触发
+    // Keccak-f[1600] 排列（24 轮 Theta/Rho/Pi/Chi/Iota）
+    sub_10015AB0(a6, a7);
+    //   参数: a6 = PARAMS 指针, a7 = 22（PARAMS 长度）
+    //   PARAMS 内容 (Sanoba):
+    //     04 06 02 00 07 01 03 05  03 00 05 04 02 01 01 02  00 80 26 02 C8 01
+    //     └─── 置换表前 8B ────┘  └─── 置换表后 8B ────┘  └附加┘└─u16─┘└─u16─┘
+
+    // --- 1d. 海绵挤出 16 字节 IV ---
+    // sub_10013FC0 从海绵中挤出指定字节数（读 8 字节 LE 块，必要时触发 Keccak-f）
+    sub_10013FC0(&v17, 16);
+    //   挤出 16 字节 → v17（__int128 在栈上 [ebp-0x20]）
+    //   此 IV 将作为 SHA3-512 多流 KDF 的种子输入
+
+    // --- 1e. SHA3-512 多流 KDF 核心变换 ---
+    // sub_1001E5E0 → sub_1001E610 执行真正的 SHA3-512 哈希
+    // 输入: bootstrap 数据 + 16 字节 IV
+    // 输出: 64 字节 SHA3-512 摘要 → Src[64]
+    sub_1001E5E0(
+        (int)Src,       // 输出缓冲区（64 字节）
+        64,             // 输出长度 = SHA3-512 digest size
+        (int)Block[0],  // 海绵状态块（内部使用）
+        8,              // (参数，含义见下文)
+        3,              // 流数量 - 1 = 3 → 实际 4 条并行流
+        v10,            // a4 = bootstrap 指针（UTF-16LE 字节）
+        a5,             // bootstrap 数据长度
+        (int)&v17,      // IV 指针（16 字节）
+        16              // IV 长度
+    );
+    // sub_1001E5E0 内部流程:
+    //   1. 将 bootstrap 数据分割为 4 条流（每条吸收不同前缀）
+    //   2. 每条流独立执行 SHA3-512(prefix || bootstrap_chunk || IV)
+    //   3. 合并 4 条流的输出 → 64 字节 Src
+    //   这种多流设计防止长度扩展攻击，并增加密钥材料熵
+
+    v17 = 0;                                 // 清除 IV（xorps 归零，防止栈残留）
+
+    // --- 1f. 输出结果：复制到调用者缓冲区 ---
+    memmove_0(v9, Src, Size);
+    //   v9 = a2 = 调用者 sub_100141C0 传入的输出指针（即 v15[8] 栈缓冲）
+    //   Size = 0x20 (32 字节)
+    //   将 SHA3-512 前 32 字节复制给调用者
+    //   这 32 字节后续在 sub_10015630 中用作 XOR scratch（2-of-2 秘密共享）
+
+    // ========================================================================
+    // 阶段 2: 吸收 SHA3 输出 → 挤出完整海绵状态 → 清理
+    // ========================================================================
+
+    // --- 2a. 切换海绵参数：SHAKE 模式（可扩展输出） ---
+    v12   = 136;                            // rate = 136 bytes = 1088 bits
+                                            //   这是 SHAKE256 的速率参数
+                                            //   容量 = 1600 - 1088 = 512 bits
+    v15   = 31;                             // delimiter = 0x1F
+                                            //   在 SHA-3 标准中，0x1F 表示 SHAKE 可扩展输出
+    v14[0] = 0;
+    qmemcpy(&v14[1], v14, 0xC0u);          // 再次清零 v14[1..48]
+    v13   = 0;                              // 循环计数器归零
+
+    // --- 2b. 海绵再吸收：将 SHA3-512 输出回注海绵 ---
+    sub_10015AB0(Src, 64);
+    //   吸收 Src[0..63] = SHA3-512 的完整 64 字节输出
+    //   目的：将 SHA3-512 的熵扩散到 Keccak-f[1600] 全状态中
+    //   这样后续挤出的 0x2000 字节每个 bit 都依赖于完整的 SHA3 输出
+
+    // --- 2c. 海绵挤出完整 0x2000 字节状态 ---
+    sub_10013FC0(v11 + 32, 0x2000);
+    //   v11 = this (ecx 传入的 Keccak 上下文指针)
+    //   v11 + 32 = this + 0x20 = FilterManagerCore+0x20（Keccak 海绵状态存储区）
+    //   挤出 0x2000 = 8192 字节到 FilterManagerCore+0x20..+0x201F
+    //   这些字节后续被 sub_100141C0 传入 DripValueImpl_new_seeded 作为
+    //   DripValue VM 的初始化种子和全局 context 表
+
+    // --- 2d. 清理：清除敏感中间数据 ---
+    memset(Src, 0, sizeof(Src));             // 擦除 64 字节中间缓冲
+    if ( Block[0] )
+        j__free_0(Block[0]);                 // 释放 0x2000 字节海绵状态块
+    return 1;                                // 成功返回
+}
+
+/**
+ * ============================================================================
+ * 调用上下文（来自 sub_100141C0）:
+ *
+ *   sub_10010550(
+ *       this = a2,        // Keccak 上下文（从 sub_100141C0 的 a2 参数传入）
+ *       a2   = v15,       // 输出到调用者栈上的 32 字节 scratch
+ *       Size = 0x20,      // 输出 32 字节
+ *       a4   = bootstrap, // UTF-16LE 编码的版权字符串
+ *       a5   = bootstrap_len,
+ *       a6   = PARAMS,    // 22 字节配置参数
+ *       a7   = 22
+ *   );
+ *
+ * ============================================================================
+ * 密码学原语映射:
+ *
+ *   函数            | 角色
+ *   ----------------|---------------------------------------------------------
+ *   sub_1000D980    | 分配 0x2000 字节 Keccak 海绵状态内存
+ *   sub_10015AB0    | 海绵吸收: 8 字节 LE XOR 入状态，满 rate 时触发 Keccak-f
+ *   sub_10013FC0    | 海绵挤出: 8 字节 LE 从状态读取，满 rate 时触发 Keccak-f
+ *   sub_1001E5E0    | 外层包装: 调用 sub_1001E610 的 SHA3-512 多流 KDF
+ *   sub_1001E610    | 内核: 4 条并行流的 SHA3-512 哈希
+ *   sub_10011C10    | 底层: Keccak-f[1600] 24 轮排列 (Theta/Rho/Pi/Chi/Iota)
+ *
+ * ============================================================================
+ * 两阶段海绵模式差异:
+ *
+ *   参数     | 阶段 1 (SHA-3)     | 阶段 2 (SHAKE)
+ *   ---------|--------------------|--------------------
+ *   rate     | 144 bytes (0x90)   | 136 bytes (0x88)
+ *   capacity | 56 bytes (448 bit) | 64 bytes (512 bit)
+ *   delimiter| 0x06               | 0x1F
+ *   用途     | 定长哈希输出       | 可扩展输出 (XOF)
+ *   吸收数据 | PARAMS (22B)       | SHA3-512 输出 (64B)
+ *   挤出数据 | IV (16B)           | 完整状态 (0x2000B)
+ *
+ *   两阶段设计的意义:
+ *   - 阶段 1: 用 SHA-3 模式从 PARAMS 派生 IV，保证 IV 是 PARAMS 的密码学承诺
+ *   - 阶段 2: 用 SHAKE 可扩展输出将 SHA3-512(bootstrap, IV) 的熵扩散到
+ *     0x2000 字节，为 DripValue VM 提供丰富的初始化材料
+ *
+ * ============================================================================
+ */
+
 ```
 
 **sub_10010410** — FNV-1a 混合 + BLAKE2s 哈希：
 
 ```c
-int __cdecl sub_10010410(void *a1, size_t Size,
-                          unsigned __int8 *a3, size_t a4, int a5)
-{
+int __cdecl sub_10010410(
+    void *a1,              // 参数1: 输出缓冲区
+    size_t Size,           // 参数2: 输出长度（同时也是 BLAKE2s digest_size）
+    unsigned __int8 *a3,   // 参数3: 输入数据指针
+    size_t a4,             // 参数4: 输入数据长度
+    int a5                 // 参数5: FNV-1a 种子
+)
     memset(a1, 0, Size);
 
     // 阶段 1: FNV-1a 键控混合
@@ -317,7 +526,13 @@ int __thiscall FilterManager_UpdateGlobalKeyFromArchiveName(
 }
 ```
 
-实际运行时 archive seed 由 DLL 内嵌 8-byte 常量 @ RVA `0x81758` 提供（Sanoba: `A4 E0 8D 9B 7E 4B 96 DD`）。
+`archive_seed` 的选择点不在 `sub_10010410`，而在传给 `sub_100157D0` 的第 4 个参数：
+
+- 参数非空时，函数使用调用方提供的 8 字节 seed。`System_bootStrap_callback` 只在第 4 个 TJS 参数是长度至少 8 的 octet 时调用 `SetArchiveSeedOctet(seed)` 登记该指针。
+- 参数为空时，函数使用局部默认 seed。默认 seed 的两个 dword 是 `0x2CAFEACE` 和 `0xDEADBEEF`，按小端字节序为 `ce ea af 2c ef be ad de`。
+- 当前静态工具不模拟完整 TJS runtime callback，而是直接调用底层 DLL 函数；因此 `FilterManagerDerive` 的自动策略是：`--archive-seed-hex` 显式值优先；否则读取 DLL RVA `0x81758` 的 8 字节静态 seed；如果该位置全 0，则扫描 `sub_100157D0` 函数体恢复上述默认 seed 常量。
+
+已验证样本中，Limelight 使用非零静态 seed `bf22368a48210206`；`枯れない世界と終わる花` 的 RVA `0x81758` 为全 0，因此应走默认 seed `ceeaaf2cefbeadde`。这也是 `nonce0` 是否能正确解密主包的关键差异。
 
 ### 2.6 sub_100148B0 — System.bootStrap 返回 Octet
 
@@ -344,7 +559,9 @@ int __thiscall sub_100148B0(int this, int a2)
                    ├─ FNV-1a(1) → BLAKE2s(params ∥ fnv_mix)
                    └─ 同一个 32-byte scratch（同一份 Keccak 海绵输出）
 
-最终_hxv4_nonce0 = sub_10010410(UNIQUE, seed=2) ⊕ sub_10010410(archive_seed)
+最终_hxv4_nonce0 = sub_10010410(UNIQUE, seed=2)
+                   ⊕ sub_10010410(resolved_archive_seed,
+                                    seed=LE32(resolved_archive_seed[0:4]))
 ```
 
 两个分量使用**完全不同的密码原语**（Keccak/SHA3 vs BLAKE2s），防止代数攻击。
@@ -380,7 +597,8 @@ int __thiscall sub_100148B0(int this, int a2)
 
 阶段 2: ArchiveDerive (sub_100157D0)
   → FNV+BLAKE2s(seed=2, UNIQUE) → hxv4_nonce0 组件 A
-  → FNV+BLAKE2s(seed, archive_seed) → XOR → 最终 hxv4_nonce0
+  → 选择 archive seed pointer；空指针时使用默认 ceeaaf2cefbeadde
+  → FNV+BLAKE2s(seed=LE32(archive_seed[0:4]), archive_seed[0:8]) → XOR → 最终 hxv4_nonce0
   → holder_words[0..1] ← 从 hxv4_nonce0 复制
 ```
 

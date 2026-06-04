@@ -93,7 +93,7 @@ internal static class Program
         var paramsBytes = args.ParamsHex is not null ? ParseHex(args.ParamsHex) : table["PARAMS"];
         var warning = DecodeAscii(table["WARNING"]);
         var unique = DecodeUtf16Le(table["UNIQUE"]);
-        var seed = args.ArchiveSeedHex is not null ? ParseHex(args.ArchiveSeedHex) : ReadBytes(module + ArchiveSeedRva, 8);
+        var seed = args.ArchiveSeedHex is not null ? ParseHex(args.ArchiveSeedHex) : ReadDefaultArchiveSeed(module);
         if (seed.Length < 8)
         {
             throw new InvalidOperationException("archive seed must be at least 8 bytes");
@@ -155,6 +155,7 @@ internal static class Program
             Console.WriteLine($"dll unique: {unique}");
             Console.WriteLine($"bootstrap bytes: {bootstrapBytes.Length}");
             Console.WriteLine($"archive update: {(archiveNameBytes is null ? "not applied" : args.ArchiveText)}");
+            Console.WriteLine($"archive seed: {ToHex(seed)}");
             return 0;
         }
         finally
@@ -182,6 +183,50 @@ internal static class Program
             suffix = warning;
         }
         return Encoding.Unicode.GetBytes(prefix + (suffix ?? ""));
+    }
+
+    private static byte[] ReadDefaultArchiveSeed(nint module)
+    {
+        var staticSeed = ReadBytes(module + ArchiveSeedRva, 8);
+        if (!IsAllZero(staticSeed))
+        {
+            return staticSeed;
+        }
+        return ReadArchiveDeriveFallbackSeed(module);
+    }
+
+    private static byte[] ReadArchiveDeriveFallbackSeed(nint module)
+    {
+        var code = ReadBytes(module + RvaArchiveDerive, 0x80);
+        for (var index = 0; index + 14 <= code.Length; index++)
+        {
+            if (
+                code[index] == 0xC7
+                && code[index + 1] == 0x45
+                && code[index + 7] == 0xC7
+                && code[index + 8] == 0x45
+                && unchecked((byte)(code[index + 2] + 4)) == code[index + 9]
+            )
+            {
+                var seed = new byte[8];
+                Array.Copy(code, index + 3, seed, 0, 4);
+                Array.Copy(code, index + 10, seed, 4, 4);
+                return seed;
+            }
+        }
+        throw new InvalidOperationException("archive seed is zero and FilterManager_ArchiveUpdate default seed constants were not found");
+    }
+
+    private static bool IsAllZero(byte[] bytes)
+    {
+        foreach (var value in bytes)
+        {
+            if (value != 0)
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static Payload BuildPayload(nint module, string dllPath, nint manager, byte[] hashKey)

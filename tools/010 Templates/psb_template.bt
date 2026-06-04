@@ -1,40 +1,70 @@
 //------------------------------------------------------------
 // 010 Editor Binary Template: M2/Kirikiri PSB container
 //
-// Reference implementation:
+// Reference implementations:
 //   progray/krkrpsb, src/psb.hpp + src/psb.cpp
+//   tools/psb_parser.py (Python PSBReader)
 //
 // Target sample:
-//   F:\SteamLibrary\steamapps\common\sanoba witch\analysis\
-//     extract_20260526\adult_evimage\entry_00001_5001.bin
+//   Sanoba Witch pimg files (entry_*.bin)
+//   adult_evimage, evimage, fgimage, bgimage PSB containers
 //
-// This is not Adobe Photoshop PSB ("8BPS").  It is an M2 PSB
+// This is NOT Adobe Photoshop PSB ("8BPS").  It is an M2 PSB
 // object/resource container used by KRKR psbfile.dll.  The file
 // starts with "PSB\0" and then a table of section offsets.
 //
-// Confirmed target values:
-//   version              = 3
-//   offset_names         = 0x00002C
-//   offset_entries       = 0x00020A
-//   offset_strings       = 0x0006FA
-//   offset_strings_data  = 0x000712
-//   offset_chunk_offsets = 0x000751
-//   offset_chunk_lengths = 0x000793
-//   offset_chunk_data    = 0x0007D8
-//   resource chunks      = 21 TLG5.0 streams
+// Format overview (matching psb_parser.py PSBHeader):
+//   +0x00  magic[4]              "PSB\0"
+//   +0x04  version (uint16)      Observed: 3
+//   +0x06  encrypt (uint16)      0 = plain section tables
+//   +0x08  offset_encrypt        Usually 0 or equals offset_names
+//   +0x0C  offset_names          Name b-tree: 3 packed arrays
+//   +0x10  offset_strings        String offset array
+//   +0x14  offset_strings_data   Null-terminated string pool
+//   +0x18  offset_chunk_offsets  Resource offsets array
+//   +0x1C  offset_chunk_lengths  Resource lengths array
+//   +0x20  offset_chunk_data     Resource data base
+//   +0x24  offset_entries        Root object/value stream
+//   Total: 40 bytes (0x28)
 //============================================================
 
 LittleEndian();
 
+//============================================================
+// Colour palette (matching project style)
+//============================================================
+#define CLR_HEADER     0xA8D8EA   // light blue
+#define CLR_NAMES      0xFFD3B6   // light orange
+#define CLR_ENTRIES    0xD5ECC2   // light green
+#define CLR_STRINGS    0xFFE8D6   // peach
+#define CLR_RESOURCE   0xD6EAF8   // pale sky
+#define CLR_TLG        0xE8D5F5   // lavender
+#define CLR_VALUE      0xFFE082   // amber
+#define CLR_ARRAY      0xF48FB1   // pink
+#define CLR_OBJECT     0xB5EAD7   // mint
+#define CLR_COLLECTION 0xC7CEEA   // periwinkle
+#define CLR_BOOL       0xFFB7B2   // salmon
+#define CLR_NUMBER     0xFFFFD8   // pale yellow
+#define CLR_FLOAT      0xB2E0E6   // pale teal
+#define CLR_STRINGREF  0xFFDAC1   // light orange
+#define CLR_RESREF     0xE2F0CB   // light green
+
 //------------------------------------------------------------
-// Helpers for PSB packed arrays
+// Helpers for PSB packed arrays and value reading
 //
-// krkrpsb psb_array_t format:
+// PSB variable-length integer encoding (psb_parser.py VARINT_PREFIXES):
+//   0x0D = 1-byte unsigned LE
+//   0x0E = 2-byte unsigned LE
+//   0x0F = 3-byte unsigned LE
+//   0x10 = 4-byte unsigned LE
+//
+// PSB packed array format (psb_array_t):
 //   count_type  : 0x0D..0x14, byte width = count_type - 0x0C
 //   count       : little-endian integer using that byte width
 //   entry_type  : 0x0D..0x14, byte width = entry_type - 0x0C
 //   entries     : count fixed-width little-endian integers
 //------------------------------------------------------------
+
 uint64 ReadUIntNAt(int64 off, int n)
 {
     local int64 save = FTell();
@@ -44,6 +74,31 @@ uint64 ReadUIntNAt(int64 off, int n)
     FSeek(off);
     for (i = 0; i < n; i++)
         v |= ((uint64)ReadByte()) << (i * 8);
+
+    FSeek(save);
+    return v;
+}
+
+int64 ReadSIntNAt(int64 off, int n)
+{
+    local int64 save = FTell();
+    local uint64 raw = 0;
+    local int64 v;
+    local int i;
+
+    FSeek(off);
+    for (i = 0; i < n; i++)
+        raw |= ((uint64)ReadByte()) << (i * 8);
+
+    // Sign-extend from n bytes
+    if (n > 0 && n < 8) {
+        local uint64 sign_bit = 1ULL << (n * 8 - 1);
+        if (raw & sign_bit) {
+            local uint64 mask = (1ULL << (n * 8)) - 1;
+            raw = raw | ~mask;
+        }
+    }
+    v = raw;
 
     FSeek(save);
     return v;
@@ -82,6 +137,28 @@ uint32 PsbArrayEntryBytes(int64 off)
     return entry_type - 0x0C;
 }
 
+int64 PsbArrayEnd(int64 off)
+{
+    local int64 save = FTell();
+    local byte count_type;
+    local int count_bytes;
+    local byte entry_type;
+    local int entry_bytes;
+    local uint64 count;
+
+    FSeek(off);
+    count_type = ReadByte();
+    count_bytes = count_type - 0x0C;
+    FSeek(off + 1);
+    count = ReadUIntNAt(off + 1, count_bytes);
+    FSeek(off + 1 + count_bytes);
+    entry_type = ReadByte();
+    entry_bytes = entry_type - 0x0C;
+
+    FSeek(save);
+    return off + 1 + count_bytes + 1 + (int64)count * entry_bytes;
+}
+
 uint64 PsbArrayValue(int64 off, uint32 index)
 {
     local int64 save = FTell();
@@ -105,19 +182,16 @@ uint64 PsbArrayValue(int64 off, uint32 index)
     return v;
 }
 
-int IsTLG5At(int64 off)
+int IsTLGAt(int64 off)
 {
     local int64 save = FTell();
     local int ok = 0;
 
-    if (off <= FileSize() - 6) {
+    if (off <= FileSize() - 4) {
         FSeek(off);
-        ok = ReadByte() == 0x54 &&
-             ReadByte() == 0x4C &&
-             ReadByte() == 0x47 &&
-             ReadByte() == 0x35 &&
-             ReadByte() == 0x2E &&
-             ReadByte() == 0x30;
+        ok = (ReadByte() == 0x54 &&   // 'T'
+              ReadByte() == 0x4C &&   // 'L'
+              ReadByte() == 0x47);    // 'G'
     }
 
     FSeek(save);
@@ -125,60 +199,241 @@ int IsTLG5At(int64 off)
 }
 
 //------------------------------------------------------------
-// Top-level PSB header from krkrpsb's PSBHDR
+// String reading helper — reads null-terminated ASCII string
+// at an absolute file offset.
+//------------------------------------------------------------
+string ReadStringAt(int64 off)
+{
+    local int64 save = FTell();
+    local string s = "";
+    local byte ch;
+    local int i;
+
+    FSeek(off);
+    for (i = 0; i < 4096; i++) {
+        if (FTell() >= FileSize())
+            break;
+        ch = ReadByte();
+        if (ch == 0) break;
+        if (ch >= 0x20 && ch < 0x7F)
+            s = SPrintf("%s%c", s, ch);
+        else
+            s = SPrintf("%s.", s);
+    }
+
+    FSeek(save);
+    return s;
+}
+
+//------------------------------------------------------------
+// Name b-tree reconstruction (psb_parser.py get_name)
+//
+// str1, str2, str3 packed arrays at hdr.offset_names.
+// Algorithm: walk str3[index] -> str2 lookup chain until 0,
+// accumulating character codes, then reverse to get ASCII name.
+//------------------------------------------------------------
+string GetPSBName(int64 names_off, int index)
+{
+    local int64 save = FTell();
+    local int64 str1_off = names_off;
+    local int64 str2_off;
+    local int64 str3_off;
+    local int str3_count, str2_count;
+    local int str3_ew, str2_ew;
+    local int a, b, c, d;
+    local string name = "";
+    local int chars[64];
+    local int char_count = 0;
+    local int ci;
+
+    // Locate the three arrays
+    str2_off = PsbArrayEnd(str1_off);
+    str3_off = PsbArrayEnd(str2_off);
+
+    str3_count = PsbArrayCount(str3_off);
+
+    if (index < 0 || index >= str3_count) {
+        FSeek(save);
+        return SPrintf("<idx %d out of range>", index);
+    }
+
+    a = (int)PsbArrayValue(str3_off, index);
+    str2_count = PsbArrayCount(str2_off);
+    if (a < 0 || a >= str2_count) {
+        FSeek(save);
+        return SPrintf("<str3[%d]=%d out of str2 range>", index, a);
+    }
+
+    b = (int)PsbArrayValue(str2_off, a);
+
+    // Walk the chain
+    while (1) {
+        c = (int)PsbArrayValue(str2_off, b);
+        d = (int)PsbArrayValue(str1_off, c);
+
+        if (char_count < 63) {
+            chars[char_count] = b - d;
+            char_count++;
+        }
+
+        b = c;
+        if (b == 0 || char_count >= 63) break;
+    }
+
+    // Build name in reverse
+    name = "";
+    for (ci = char_count - 1; ci >= 0; ci--) {
+        if (chars[ci] >= 0x20 && chars[ci] < 0x7F)
+            name = SPrintf("%s%c", name, chars[ci]);
+        else
+            name = SPrintf("%s.", name);
+    }
+
+    FSeek(save);
+    return name;
+}
+
+//------------------------------------------------------------
+// Type classification (psb_parser.py classify_type_tag + tags)
+//
+// Returns human-readable name for each PSB type tag byte.
+//------------------------------------------------------------
+string GetPSBValueTypeName(byte tag)
+{
+    if (tag == 0x00) return "NONE";
+    if (tag == 0x01) return "NULL";
+    if (tag == 0x02) return "FALSE";
+    if (tag == 0x03) return "TRUE";
+    if (tag >= 0x04 && tag <= 0x0C)
+        return SPrintf("INT%d (%d-byte signed)", (tag - 4) * 8, tag - 4);
+    if (tag == 0x0D) return "VARINT_U8 (1-byte prefix)";
+    if (tag == 0x0E) return "VARINT_U16 (2-byte prefix)";
+    if (tag == 0x0F) return "VARINT_U24 (3-byte prefix)";
+    if (tag == 0x10) return "VARINT_U32 (4-byte prefix)";
+    if (tag == 0x11) return "INLINE_U8 (1-byte value)";
+    if (tag == 0x12) return "INLINE_U16 (2-byte value)";
+    if (tag == 0x13) return "INLINE_U24 (3-byte value)";
+    if (tag == 0x14) return "INLINE_U32 (4-byte value)";
+    if (tag == 0x15) return "STRING_N1 (1-byte index)";
+    if (tag == 0x16) return "STRING_N2 (2-byte index)";
+    if (tag == 0x17) return "STRING_N3 (3-byte index)";
+    if (tag == 0x18) return "STRING_N4 (4-byte index)";
+    if (tag == 0x19) return "RESOURCE_N1 (1-byte index)";
+    if (tag == 0x1A) return "RESOURCE_N2 (2-byte index)";
+    if (tag == 0x1B) return "RESOURCE_N3 (3-byte index)";
+    if (tag == 0x1C) return "RESOURCE_N4 (4-byte index)";
+    if (tag == 0x1D) return "FLOAT_ZERO (0.0)";
+    if (tag == 0x1E) return "FLOAT32 (IEEE 754)";
+    if (tag == 0x1F) return "DOUBLE64 (IEEE 754)";
+    if (tag == 0x20) return "COLLECTION (array → values)";
+    if (tag == 0x21) return "OBJECT (name→value map)";
+    return SPrintf("UNKNOWN_0x%02X", tag);
+}
+
+//------------------------------------------------------------
+// Returns the byte-width for data following a type tag.
+// For varint/inline: data_size = tag - 0x0C (or tag - 0x10 for inline)
+// For string/resource refs: index width = tag - 0x14 (or tag - 0x18)
+// For int: size = tag - 0x04
+// For float/double: fixed sizes
+//------------------------------------------------------------
+int GetPSBValueDataBytes(byte tag)
+{
+    // Null/bool: no data bytes
+    if (tag <= 0x03)
+        return 0;
+    // Signed integers: tag - 4 bytes
+    if (tag >= 0x04 && tag <= 0x0C)
+        return tag - 0x04;
+    // Varint prefixes (0x0D-0x10): data = tag - 0x0C bytes
+    if (tag >= 0x0D && tag <= 0x10)
+        return tag - 0x0C;
+    // Inline values (0x11-0x14): data = tag - 0x10 bytes
+    if (tag >= 0x11 && tag <= 0x14)
+        return tag - 0x10;
+    // String references (0x15-0x18): index = tag - 0x14 bytes
+    if (tag >= 0x15 && tag <= 0x18)
+        return tag - 0x14;
+    // Resource references (0x19-0x1C): index = tag - 0x18 bytes
+    if (tag >= 0x19 && tag <= 0x1C)
+        return tag - 0x18;
+    // Float zero: 0 bytes
+    if (tag == 0x1D)
+        return 0;
+    // Float32: 4 bytes
+    if (tag == 0x1E)
+        return 4;
+    // Double64: 8 bytes
+    if (tag == 0x1F)
+        return 8;
+    // Collection / Object: fixed-size header + nested data
+    if (tag == 0x20 || tag == 0x21)
+        return 0;  // variable, handled specially
+    return 0;
+}
+
+//------------------------------------------------------------
+// Top-level PSB header from krkrpsb's PSBHDR (40 bytes)
+// Matching psb_parser.py PSBHeader struct.unpack('<4sHH8I')
 //------------------------------------------------------------
 typedef struct {
-    char     signature[4]          <comment="'PSB\\0'">;
-    uint16   version               <comment="Observed: 3 for this file">;
-    uint16   encrypt               <comment="0 = plain section tables">;
-    uint32   offset_encrypt        <format=hex,
+    char     signature[4]          <bgcolor=CLR_HEADER,
+                                    comment="'PSB\\0'">;
+    uint16   version               <bgcolor=CLR_HEADER,
+                                    comment="Observed: 3 for this game">;
+    uint16   encrypt               <bgcolor=CLR_HEADER,
+                                    comment="0 = plain section tables">;
+    uint32   offset_encrypt        <bgcolor=CLR_HEADER, format=hex,
                                     comment="Usually equals offset_names when plain">;
-    uint32   offset_names          <format=hex,
-                                    comment="Start of 3 packed arrays for name b-tree">;
-    uint32   offset_strings        <format=hex,
-                                    comment="Packed array of offsets into strings_data">;
-    uint32   offset_strings_data   <format=hex,
-                                    comment="Null-terminated string pool">;
-    uint32   offset_chunk_offsets  <format=hex,
-                                    comment="Packed array of resource offsets relative to chunk_data">;
-    uint32   offset_chunk_lengths  <format=hex,
-                                    comment="Packed array of resource byte lengths">;
-    uint32   offset_chunk_data     <format=hex,
-                                    comment="Resource data base; first TLG5 starts here">;
-    uint32   offset_entries        <format=hex,
+    uint32   offset_names          <bgcolor=CLR_HEADER, format=hex,
+                                    comment="Name b-tree: 3 packed arrays (str1,str2,str3)">;
+    uint32   offset_strings        <bgcolor=CLR_HEADER, format=hex,
+                                    comment="Packed array: offsets into strings_data">;
+    uint32   offset_strings_data   <bgcolor=CLR_HEADER, format=hex,
+                                    comment="Null-terminated ASCII string pool">;
+    uint32   offset_chunk_offsets  <bgcolor=CLR_HEADER, format=hex,
+                                    comment="Packed array: resource offsets relative to chunk_data">;
+    uint32   offset_chunk_lengths  <bgcolor=CLR_HEADER, format=hex,
+                                    comment="Packed array: resource byte lengths">;
+    uint32   offset_chunk_data     <bgcolor=CLR_HEADER, format=hex,
+                                    comment="Resource data base; first TLG starts here">;
+    uint32   offset_entries        <bgcolor=CLR_HEADER, format=hex,
                                     comment="Root object/value stream">;
 } PSB_Header;
 
+//------------------------------------------------------------
+// PSB packed array sub-components (for struct field display)
+//------------------------------------------------------------
 typedef struct {
-    byte count_type               <format=hex,
-                                   comment="0x0D..0x14, count byte width = type - 0x0C">;
+    byte count_type               <bgcolor=CLR_ARRAY, format=hex,
+                                   comment="0x0D..0x14 => byte-width = type - 0x0C">;
 } PSB_ArrayCountType;
 
 typedef struct {
-    byte count0                   <format=hex>;
+    byte count0                   <bgcolor=CLR_ARRAY, format=hex>;
 } PSB_Count1;
 
 typedef struct {
-    byte count0                   <format=hex>;
-    byte count1                   <format=hex>;
+    byte count0                   <bgcolor=CLR_ARRAY, format=hex>;
+    byte count1                   <bgcolor=CLR_ARRAY, format=hex>;
 } PSB_Count2;
 
 typedef struct {
-    byte count0                   <format=hex>;
-    byte count1                   <format=hex>;
-    byte count2                   <format=hex>;
+    byte count0                   <bgcolor=CLR_ARRAY, format=hex>;
+    byte count1                   <bgcolor=CLR_ARRAY, format=hex>;
+    byte count2                   <bgcolor=CLR_ARRAY, format=hex>;
 } PSB_Count3;
 
 typedef struct {
-    byte count0                   <format=hex>;
-    byte count1                   <format=hex>;
-    byte count2                   <format=hex>;
-    byte count3                   <format=hex>;
+    byte count0                   <bgcolor=CLR_ARRAY, format=hex>;
+    byte count1                   <bgcolor=CLR_ARRAY, format=hex>;
+    byte count2                   <bgcolor=CLR_ARRAY, format=hex>;
+    byte count3                   <bgcolor=CLR_ARRAY, format=hex>;
 } PSB_Count4;
 
 typedef struct {
-    byte entry_type               <format=hex,
-                                   comment="0x0D..0x14, entry byte width = type - 0x0C">;
+    byte entry_type               <bgcolor=CLR_ARRAY, format=hex,
+                                   comment="0x0D..0x14 => byte-width = type - 0x0C">;
 } PSB_ArrayEntryType;
 
 typedef struct {
@@ -192,7 +447,7 @@ typedef struct {
 
     PSB_ArrayCountType count_type;
 
-    // Validate count_type: must be in range 0x0D .. 0x14
+    // Validate count_type range
     if (count_type.count_type < 0x0D || count_type.count_type > 0x14) {
         Warning("PSB_PackedArray: invalid count_type 0x%02X at 0x%08LX",
                 count_type.count_type, array_start);
@@ -214,7 +469,6 @@ typedef struct {
         PSB_ArrayEntryType entry_type;
         entry_bytes = entry_type.entry_type - 0x0C;
 
-        // Validate entry_type range as well
         if (entry_type.entry_type < 0x0D || entry_type.entry_type > 0x14) {
             Warning("PSB_PackedArray: invalid entry_type 0x%02X at 0x%08LX",
                     entry_type.entry_type, array_start);
@@ -235,79 +489,343 @@ typedef struct {
     }
 } PSB_PackedArray;
 
+//------------------------------------------------------------
+// Name b-tree: three packed arrays for compact property names.
+// str1 stores character codes, str2 stores lookup chain links,
+// str3 stores entry-point indices.
+//------------------------------------------------------------
 typedef struct {
-    PSB_PackedArray str1          <comment="krkrpsb psb_t::str1">;
-    PSB_PackedArray str2          <comment="krkrpsb psb_t::str2">;
-    PSB_PackedArray str3          <comment="krkrpsb psb_t::str3">;
+    PSB_PackedArray str1          <bgcolor=CLR_NAMES,
+                                   comment="Character code table">;
+    PSB_PackedArray str2          <bgcolor=CLR_NAMES,
+                                   comment="Link chain table">;
+    PSB_PackedArray str3          <bgcolor=CLR_NAMES,
+                                   comment="Entry-point index table">;
 } PSB_NameBTree;
 
 //------------------------------------------------------------
-// PSB value type tags from krkrpsb psb_value_t::type_t
+// PSB value type tags — complete classification from psb_parser.py
 //------------------------------------------------------------
 enum <byte> PSB_ValueType {
     PSB_TYPE_NONE        = 0x00,
     PSB_TYPE_NULL        = 0x01,
     PSB_TYPE_FALSE       = 0x02,
     PSB_TYPE_TRUE        = 0x03,
-    PSB_TYPE_NUMBER_N0   = 0x04,
-    PSB_TYPE_NUMBER_N1   = 0x05,
-    PSB_TYPE_NUMBER_N2   = 0x06,
-    PSB_TYPE_NUMBER_N3   = 0x07,
-    PSB_TYPE_NUMBER_N4   = 0x08,
-    PSB_TYPE_NUMBER_N5   = 0x09,
-    PSB_TYPE_NUMBER_N6   = 0x0A,
-    PSB_TYPE_NUMBER_N7   = 0x0B,
-    PSB_TYPE_NUMBER_N8   = 0x0C,
-    PSB_TYPE_ARRAY_N1    = 0x0D,
-    PSB_TYPE_ARRAY_N2    = 0x0E,
-    PSB_TYPE_ARRAY_N3    = 0x0F,
-    PSB_TYPE_ARRAY_N4    = 0x10,
-    PSB_TYPE_ARRAY_N5    = 0x11,
-    PSB_TYPE_ARRAY_N6    = 0x12,
-    PSB_TYPE_ARRAY_N7    = 0x13,
-    PSB_TYPE_ARRAY_N8    = 0x14,
-    PSB_TYPE_STRING_N1   = 0x15,
-    PSB_TYPE_STRING_N2   = 0x16,
-    PSB_TYPE_STRING_N3   = 0x17,
-    PSB_TYPE_STRING_N4   = 0x18,
-    PSB_TYPE_RESOURCE_N1 = 0x19,
-    PSB_TYPE_RESOURCE_N2 = 0x1A,
-    PSB_TYPE_RESOURCE_N3 = 0x1B,
-    PSB_TYPE_RESOURCE_N4 = 0x1C,
-    PSB_TYPE_FLOAT0      = 0x1D,
-    PSB_TYPE_FLOAT       = 0x1E,
-    PSB_TYPE_DOUBLE      = 0x1F,
-    PSB_TYPE_COLLECTION  = 0x20,
-    PSB_TYPE_OBJECTS     = 0x21
+    PSB_TYPE_INT_N0      = 0x04,  // 0-byte signed int (value=0)
+    PSB_TYPE_INT_N1      = 0x05,  // 1-byte signed int
+    PSB_TYPE_INT_N2      = 0x06,  // 2-byte signed int
+    PSB_TYPE_INT_N3      = 0x07,  // 3-byte signed int
+    PSB_TYPE_INT_N4      = 0x08,  // 4-byte signed int
+    PSB_TYPE_INT_N5      = 0x09,  // 5-byte signed int
+    PSB_TYPE_INT_N6      = 0x0A,  // 6-byte signed int
+    PSB_TYPE_INT_N7      = 0x0B,  // 7-byte signed int
+    PSB_TYPE_INT_N8      = 0x0C,  // 8-byte signed int
+    PSB_TYPE_ARRAY_N1    = 0x0D,  // 1-byte count/entry varint array prefix
+    PSB_TYPE_ARRAY_N2    = 0x0E,  // 2-byte count/entry varint array prefix
+    PSB_TYPE_ARRAY_N3    = 0x0F,  // 3-byte count/entry varint array prefix
+    PSB_TYPE_ARRAY_N4    = 0x10,  // 4-byte count/entry varint array prefix
+    PSB_TYPE_INLINE_U8   = 0x11,  // 1-byte inline unsigned value
+    PSB_TYPE_INLINE_U16  = 0x12,  // 2-byte inline unsigned value
+    PSB_TYPE_INLINE_U24  = 0x13,  // 3-byte inline unsigned value
+    PSB_TYPE_INLINE_U32  = 0x14,  // 4-byte inline unsigned value
+    PSB_TYPE_STRING_N1   = 0x15,  // 1-byte string table index
+    PSB_TYPE_STRING_N2   = 0x16,  // 2-byte string table index
+    PSB_TYPE_STRING_N3   = 0x17,  // 3-byte string table index
+    PSB_TYPE_STRING_N4   = 0x18,  // 4-byte string table index
+    PSB_TYPE_RESOURCE_N1 = 0x19,  // 1-byte resource table index
+    PSB_TYPE_RESOURCE_N2 = 0x1A,  // 2-byte resource table index
+    PSB_TYPE_RESOURCE_N3 = 0x1B,  // 3-byte resource table index
+    PSB_TYPE_RESOURCE_N4 = 0x1C,  // 4-byte resource table index
+    PSB_TYPE_FLOAT_ZERO  = 0x1D,  // Float 0.0
+    PSB_TYPE_FLOAT       = 0x1E,  // IEEE 754 float32
+    PSB_TYPE_DOUBLE      = 0x1F,  // IEEE 754 float64
+    PSB_TYPE_COLLECTION  = 0x20,  // Array → values (offset array + data)
+    PSB_TYPE_OBJECTS     = 0x21   // Name→value map (name idx array + offset array + data)
 };
 
 //------------------------------------------------------------
-// TLG5 stream header embedded as PSB resources
+// PSB Leaf Value — parses a single value that is NOT a
+// collection or object (those are handled separately).
+// Covers: null, bool, int, float, string ref, resource ref,
+// varint, inline value.
+//
+// Used as the value type inside objects (level 1+).
 //------------------------------------------------------------
 typedef struct {
-    char     magic[7]       <comment="'TLG5.0\\0'">;
-    char     raw_marker[4]  <comment="'raw\\x1A'">;
-    byte     colors         <comment="Usually 4">;
-    uint32   width          <comment="TLG image width">;
-    uint32   height         <comment="TLG image height">;
-    uint32   block_height   <comment="Rows per compressed block">;
-} TLG5_Header;
+    local int64 val_start = FTell();
+    byte type_tag <bgcolor=CLR_VALUE,
+                   comment=GetPSBValueTypeName(type_tag)>;
+
+    // -- 0x00 NONE (should not appear in valid streams) --
+
+    // -- 0x01 NULL --
+    if (type_tag == PSB_TYPE_NULL) {
+        // No data bytes
+    }
+
+    // -- 0x02 FALSE, 0x03 TRUE --
+    else if (type_tag == PSB_TYPE_FALSE || type_tag == PSB_TYPE_TRUE) {
+        // No data bytes — value is the tag itself
+    }
+
+    // -- 0x04..0x0C: Signed integers (size = tag - 4) --
+    else if (type_tag >= PSB_TYPE_INT_N0 && type_tag <= PSB_TYPE_INT_N8) {
+        local int int_size = type_tag - 4;
+        if (int_size == 0) {
+            // Value is 0, no bytes follow
+        } else if (int_size == 1) {
+            int8 val <bgcolor=CLR_NUMBER>;
+        } else if (int_size == 2) {
+            int16 val <bgcolor=CLR_NUMBER>;
+        } else if (int_size == 3) {
+            byte b0 <bgcolor=CLR_NUMBER>;
+            byte b1 <bgcolor=CLR_NUMBER>;
+            byte b2 <bgcolor=CLR_NUMBER>;
+            local int64 raw = b0 | (b1 << 8) | (b2 << 16);
+            local int sign_bit = 1 << 23;
+            if (raw & sign_bit)
+                raw = raw - (1 << 24);
+        } else if (int_size == 4) {
+            int32 val <bgcolor=CLR_NUMBER>;
+        } else if (int_size == 5) {
+            // Rare: skip 5 bytes
+            byte raw5[5] <bgcolor=CLR_NUMBER>;
+        } else if (int_size == 6) {
+            byte raw6[6] <bgcolor=CLR_NUMBER>;
+        } else if (int_size == 7) {
+            byte raw7[7] <bgcolor=CLR_NUMBER>;
+        } else if (int_size == 8) {
+            int64 val <bgcolor=CLR_NUMBER>;
+        }
+    }
+
+    // -- 0x0D..0x10: Varint (array-style prefix + data) --
+    else if (type_tag >= PSB_TYPE_ARRAY_N1 && type_tag <= PSB_TYPE_ARRAY_N4) {
+        local int data_size = type_tag - 0x0C;
+        if (data_size == 1) {
+            byte val <bgcolor=CLR_NUMBER>;
+        } else if (data_size == 2) {
+            uint16 val <bgcolor=CLR_NUMBER>;
+        } else if (data_size == 3) {
+            byte b0 <bgcolor=CLR_NUMBER>;
+            byte b1 <bgcolor=CLR_NUMBER>;
+            byte b2 <bgcolor=CLR_NUMBER>;
+        } else if (data_size == 4) {
+            uint32 val <bgcolor=CLR_NUMBER>;
+        }
+    }
+
+    // -- 0x11..0x14: Inline unsigned values --
+    else if (type_tag >= PSB_TYPE_INLINE_U8 && type_tag <= PSB_TYPE_INLINE_U32) {
+        local int data_size = type_tag - 0x10;
+        if (data_size == 1) {
+            byte val <bgcolor=CLR_NUMBER>;
+        } else if (data_size == 2) {
+            uint16 val <bgcolor=CLR_NUMBER>;
+        } else if (data_size == 3) {
+            byte b0 <bgcolor=CLR_NUMBER>;
+            byte b1 <bgcolor=CLR_NUMBER>;
+            byte b2 <bgcolor=CLR_NUMBER>;
+        } else if (data_size == 4) {
+            uint32 val <bgcolor=CLR_NUMBER>;
+        }
+    }
+
+    // -- 0x15..0x18: String reference (index into string table) --
+    else if (type_tag >= PSB_TYPE_STRING_N1 && type_tag <= PSB_TYPE_STRING_N4) {
+        local int idx_width = type_tag - 0x14;
+        local uint32 str_index = 0;
+        if (idx_width == 1) {
+            byte idx <bgcolor=CLR_STRINGREF,
+                       comment=SPrintf("String table index: %u", idx)>;
+            str_index = idx;
+        } else if (idx_width == 2) {
+            uint16 idx <bgcolor=CLR_STRINGREF,
+                        comment=SPrintf("String table index: %u", idx)>;
+            str_index = idx;
+        } else if (idx_width == 3) {
+            byte b0 <bgcolor=CLR_STRINGREF>;
+            byte b1 <bgcolor=CLR_STRINGREF>;
+            byte b2 <bgcolor=CLR_STRINGREF>;
+            str_index = b0 | (b1 << 8) | (b2 << 16);
+        } else if (idx_width == 4) {
+            uint32 idx <bgcolor=CLR_STRINGREF,
+                        comment=SPrintf("String table index: %u", idx)>;
+            str_index = idx;
+        }
+    }
+
+    // -- 0x19..0x1C: Resource reference (index into chunk table) --
+    else if (type_tag >= PSB_TYPE_RESOURCE_N1 && type_tag <= PSB_TYPE_RESOURCE_N4) {
+        local int idx_width = type_tag - 0x18;
+        local uint32 res_index = 0;
+        if (idx_width == 1) {
+            byte idx <bgcolor=CLR_RESREF,
+                       comment=SPrintf("Resource table index: %u", idx)>;
+            res_index = idx;
+        } else if (idx_width == 2) {
+            uint16 idx <bgcolor=CLR_RESREF,
+                        comment=SPrintf("Resource table index: %u", idx)>;
+            res_index = idx;
+        } else if (idx_width == 3) {
+            byte b0 <bgcolor=CLR_RESREF>;
+            byte b1 <bgcolor=CLR_RESREF>;
+            byte b2 <bgcolor=CLR_RESREF>;
+            res_index = b0 | (b1 << 8) | (b2 << 16);
+        } else if (idx_width == 4) {
+            uint32 idx <bgcolor=CLR_RESREF,
+                        comment=SPrintf("Resource table index: %u", idx)>;
+            res_index = idx;
+        }
+    }
+
+    // -- 0x1D: Float 0.0 --
+    else if (type_tag == PSB_TYPE_FLOAT_ZERO) {
+        // Value is 0.0, no bytes follow
+    }
+
+    // -- 0x1E: IEEE 754 float32 --
+    else if (type_tag == PSB_TYPE_FLOAT) {
+        float val <bgcolor=CLR_FLOAT>;
+    }
+
+    // -- 0x1F: IEEE 754 float64 --
+    else if (type_tag == PSB_TYPE_DOUBLE) {
+        double val <bgcolor=CLR_FLOAT>;
+    }
+
+    // -- 0x20 COLLECTION and 0x21 OBJECT are handled at a higher level --
+    // -- If we encounter them where a leaf is expected, show tag only --
+    else if (type_tag == PSB_TYPE_COLLECTION || type_tag == PSB_TYPE_OBJECTS) {
+        // These should be parsed by the caller; show tag as placeholder
+    }
+
+    else {
+        Warning("PSB_LeafValue: unknown type tag 0x%02X at 0x%08LX",
+                type_tag, val_start);
+    }
+} PSB_LeafValue;
+
+//------------------------------------------------------------
+// PSB Collection (0x20)
+//
+// Layout:
+//   [0x20]              collection tag
+//   [offset_array]      PSB_PackedArray of relative offsets
+//   --- base = FTell() ---
+//   [value_0]           at base + offset_array[0]
+//   [value_1]           at base + offset_array[1]
+//   ...
+//
+// All values are PSB_LeafValue (no deeper nesting parsed here).
+//------------------------------------------------------------
+typedef struct {
+    byte col_tag <bgcolor=CLR_COLLECTION,
+                   comment=SPrintf("Collection tag 0x%02X", PSB_TYPE_COLLECTION)>;
+
+    local int64 offset_arr_off = FTell();
+    PSB_PackedArray col_offsets <bgcolor=CLR_COLLECTION,
+                                  comment="Relative offsets to collection items">;
+    local int64 values_base = FTell();
+    local int item_count = PsbArrayCount(offset_arr_off);
+    local int i;
+
+    for (i = 0; i < item_count && i < 500; i++) {
+        local int val_rel = (int)PsbArrayValue(offset_arr_off, i);
+        local int64 val_off = values_base + val_rel;
+        if (val_off >= FileSize() || val_off < 0)
+            break;
+        FSeek(val_off);
+        PSB_LeafValue item <comment=SPrintf("[%d]", i)>;
+    }
+} PSB_Collection;
+
+//------------------------------------------------------------
+// PSB Object (0x21)
+//
+// Layout:
+//   [0x21]              object tag
+//   [name_idx_array]    PSB_PackedArray: indices into name b-tree
+//   [offset_array]      PSB_PackedArray: relative offsets from base
+//   --- base = FTell() ---
+//   [value_0]           at base + offset_array[0]
+//   [value_1]           at base + offset_array[1]
+//   ...
+//
+// Values in this object are PSB_LeafValue — no further
+// nesting is parsed (handled at the root level by the main
+// template body).
+//------------------------------------------------------------
+typedef struct {
+    byte obj_tag <bgcolor=CLR_OBJECT,
+                   comment=SPrintf("Object tag 0x%02X", PSB_TYPE_OBJECTS)>;
+
+    local int64 name_arr_off = FTell();
+    PSB_PackedArray name_indices <bgcolor=CLR_OBJECT,
+                                   comment="Property name indices (into name b-tree)">;
+    local int prop_count = PsbArrayCount(name_arr_off);
+
+    local int64 off_arr_off = FTell();
+    PSB_PackedArray value_offsets <bgcolor=CLR_OBJECT,
+                                    comment="Relative offsets to property values">;
+    local int64 values_base = FTell();
+    local int i;
+
+    for (i = 0; i < prop_count && i < 500; i++) {
+        local int val_rel = (int)PsbArrayValue(off_arr_off, i);
+        local int64 val_off = values_base + val_rel;
+        if (val_off >= FileSize() || val_off < 0)
+            break;
+        // Get property name (but we need names_off from the header)
+        // The comment will be set per-property in the root level parse
+        FSeek(val_off);
+        PSB_LeafValue prop_val;
+    }
+} PSB_Object;
+
+//------------------------------------------------------------
+// TLG image header — supports both TLG5.0 and TLG0.0
+//
+// Enhanced from psb_parser.py _parse_tlg_data().
+// Format:
+//   magic[7]   : "TLG5.0\0" or "TLG0.0\0" (null-terminated)
+//   raw_fmt[]  : ASCII alphanumeric chars (e.g. "raw", "sds", "zlib")
+//   fmt_flag   : 0x00 = standard, 0x1A = variant marker
+//   colors     : 1=gray, 2=gray+alpha, 3=RGB, 4=RGBA
+//   width      : uint32 LE
+//   height     : uint32 LE
+//   block_size : uint32 LE (rows per compressed block)
+// Total: 24 bytes (7+3+1+1+4+4+4)
+//------------------------------------------------------------
+typedef struct {
+    char     magic[6]     <bgcolor=CLR_TLG, comment="'TLG5.0' or 'TLG0.0'">;
+    char     magic_null   <bgcolor=CLR_TLG, comment="Null terminator (0x00)">;
+    char     raw_fmt[3]   <bgcolor=CLR_TLG, comment="Format: 'raw', 'sds', 'zlib'">;
+    byte     fmt_flag     <bgcolor=CLR_TLG,
+                           comment="Format flag: 0x00=standard; 0x1A=variant">;
+    byte     colors       <bgcolor=CLR_TLG,
+                           comment="Color type: 1=gray, 2=gray+alpha, 3=RGB, 4=RGBA">;
+    uint32   width        <bgcolor=CLR_TLG, comment="Image width (pixels)">;
+    uint32   height       <bgcolor=CLR_TLG, comment="Image height (pixels)">;
+    uint32   block_height <bgcolor=CLR_TLG, comment="Rows per compressed block">;
+} TLG_Header;
 
 local int64 g_chunk_end;
 
 typedef struct {
     local uint32 block_count = 0;
     local int payload_size;
-    local int64 payload_avail;
     local int64 block_table_size;
     local int64 block_table_end;
+    local int64 payload_avail;
     local int64 payload_end;
 
-    TLG5_Header header;
+    TLG_Header header;
 
     if (header.block_height != 0)
         block_count = (header.height + header.block_height - 1) / header.block_height;
 
+    // Block size table: block_count * 4 bytes (uint32 offsets)
     if (block_count > 0 && block_count < 0x100000) {
         block_table_size = block_count * 4;
         block_table_end = FTell() + block_table_size;
@@ -318,6 +836,7 @@ typedef struct {
         FSeek(block_table_end);
     }
 
+    // Remainder is compressed image payload
     payload_size = g_chunk_end - FTell();
     payload_avail = FileSize() - FTell();
     if (payload_size > payload_avail)
@@ -327,87 +846,243 @@ typedef struct {
         payload_end = FTell() + payload_size;
         FSeek(payload_end);
     }
-} TLG5_Resource;
+} TLG_Resource;
 
-//------------------------------------------------------------
-// Root
-//------------------------------------------------------------
+//============================================================
+// Root template — main parse flow
+//============================================================
+
 PSB_Header hdr;
 local int section_size;
 
+// Validate magic
 if (hdr.signature[0] != 'P' || hdr.signature[1] != 'S' ||
     hdr.signature[2] != 'B' || hdr.signature[3] != 0) {
     Warning("This file does not start with PSB\\0.");
 }
 
-// Version 3 files in this sample set have a 4-byte gap between
-// sizeof(PSBHDR)=0x28 and offset_names=0x2C.  krkrpsb does not
-// interpret it during normal object/resource parsing.
+//------------------------------------------------------------
+// Gap between header end (0x28) and offset_names
+// Version 3 files in this sample set have a 4-byte gap.
+// krkrpsb does not interpret it during normal parsing.
+//------------------------------------------------------------
 if (hdr.offset_names > FTell()) {
     section_size = hdr.offset_names - FTell();
     if (section_size > FileSize() - FTell())
         section_size = FileSize() - FTell();
-    if (section_size > 0)
-        FSeek(FTell() + section_size);
+    if (section_size > 0) {
+        uchar gap[section_size] <bgcolor=CLR_HEADER,
+            comment="Gap between header end and name b-tree">;
+    }
 }
 
 //------------------------------------------------------------
-// Names table: three packed arrays used as a compact b-tree.
-// krkrpsb reconstructs a key name by walking str3 -> str2 -> str1.
+// Name b-tree section
+// Three packed arrays: str1 (char codes), str2 (chain links),
+// str3 (entry-point indices).
 //------------------------------------------------------------
 FSeek(hdr.offset_names);
+local int64 names_start = FTell();
 PSB_NameBTree names;
 
 //------------------------------------------------------------
-// Root entries object/value stream.
-// Full recursive expansion is possible, but 010 is mainly used here
-// to expose the binary sections and resource chunks without changing
-// the file.  The first byte should usually be 0x21 (TYPE_OBJECTS).
+// Print decoded name table as a comment section
+// Reconstructs all property names from the name b-tree.
+//------------------------------------------------------------
+local int str3_count = PsbArrayCount(names_start);
+local int str3_entry_bytes = PsbArrayEntryBytes(names_start);
+local int64 str1_end = PsbArrayEnd(names_start);
+local int str2_count = PsbArrayCount(str1_end);
+local int64 str2_end = PsbArrayEnd(str1_end);
+local int64 str3_off = str2_end;
+local int str3_count2 = PsbArrayCount(str3_off);
+
+// Build a summary of all names (max 200 for display)
+local string name_summary = "";
+local int ni;
+local int name_max = str3_count2;
+if (name_max > 200) name_max = 200;
+for (ni = 0; ni < name_max; ni++) {
+    local string decoded = GetPSBName(names_start, ni);
+    if (ni == 0)
+        name_summary = decoded;
+    else
+        name_summary = SPrintf("%s, %s", name_summary, decoded);
+}
+if (str3_count2 > 200)
+    name_summary = SPrintf("%s, ... (+%d more)", name_summary, str3_count2 - 200);
+
+// Display as a virtual comment field
+local int name_display = 0;
+
+//------------------------------------------------------------
+// Root entries section — object/value stream
+//
+// This section contains the serialized PSB object tree.
+// The root is typically an OBJECT (0x21) for pimg files.
+// We parse the root object with named properties, then any
+// further nesting is displayed via LeafValue or Collection/
+// Object sub-structs.
+//
+// Based on psb_parser.py parse_value / _parse_object.
 //------------------------------------------------------------
 FSeek(hdr.offset_entries);
-PSB_ValueType root_type <comment="Root value tag; usually TYPE_OBJECTS (0x21)">;
-if (hdr.offset_strings > FTell()) {
-    section_size = hdr.offset_strings - FTell();
-    if (section_size > FileSize() - FTell())
-        section_size = FileSize() - FTell();
-    if (section_size > 0)
-        FSeek(FTell() + section_size);
+local int64 entries_start = FTell();
+
+PSB_ValueType root_type <bgcolor=CLR_ENTRIES,
+    comment=SPrintf("Root value tag: %s", GetPSBValueTypeName(root_type))>;
+
+// If root is OBJECT (0x21), parse named properties
+if (root_type == PSB_TYPE_OBJECTS) {
+    local int64 root_name_arr_off = FTell();
+    PSB_PackedArray root_names <bgcolor=CLR_ENTRIES,
+        comment=SPrintf("Root object property name indices (%d entries)",
+                         PsbArrayCount(root_name_arr_off))>;
+    local int root_count = PsbArrayCount(root_name_arr_off);
+
+    local int64 root_off_arr_off = FTell();
+    PSB_PackedArray root_offsets <bgcolor=CLR_ENTRIES,
+        comment=SPrintf("Root object property value offsets (%d entries)",
+                         root_count)>;
+    local int64 root_values_base = FTell();
+    local int64 root_section_end;
+
+    // Determine where the root object data ends (next section)
+    if (hdr.offset_strings > FTell())
+        root_section_end = hdr.offset_strings;
+    else if (hdr.offset_chunk_offsets > FTell())
+        root_section_end = hdr.offset_chunk_offsets;
+    else
+        root_section_end = FileSize();
+
+    // Parse each root-level property
+    local int ri;
+    for (ri = 0; ri < root_count && ri < 200; ri++) {
+        local int name_idx = (int)PsbArrayValue(root_name_arr_off, ri);
+        local int val_rel = (int)PsbArrayValue(root_off_arr_off, ri);
+        local int64 val_off = root_values_base + val_rel;
+        local string pname = GetPSBName(names_start, name_idx);
+
+        if (val_off >= root_section_end || val_off < root_values_base)
+            break;
+
+        FSeek(val_off);
+
+        // Peek the type tag to decide how to parse
+        local byte peek_tag = ReadByte();
+        FSeek(val_off);
+
+        if (peek_tag == PSB_TYPE_COLLECTION) {
+            PSB_Collection col <comment=pname>;
+        } else if (peek_tag == PSB_TYPE_OBJECTS) {
+            PSB_Object obj <comment=pname>;
+        } else {
+            PSB_LeafValue leaf <comment=pname>;
+        }
+    }
+
+    // Seek past residual root data to the strings section
+    if (hdr.offset_strings > FTell())
+        FSeek(hdr.offset_strings);
+} else {
+    // Non-object root: skip to strings section
+    if (hdr.offset_strings > FTell()) {
+        section_size = hdr.offset_strings - FTell();
+        if (section_size > FileSize() - FTell())
+            section_size = FileSize() - FTell();
+        if (section_size > 0) {
+            uchar entries_data[section_size] <bgcolor=CLR_ENTRIES,
+                comment="Root value data (non-object)">;
+        }
+    }
 }
 
 //------------------------------------------------------------
-// String table and string pool.
-// In this target the string pool is:
-//   AA AB AC AD AE AF AG BA ... CG
+// String table section
+//
+// offset_strings: PSB_PackedArray of offsets (relative to
+// offset_strings_data) into the string pool.
+//
+// offset_strings_data: Null-terminated ASCII string pool.
+// Each string is read from strings_data + offsets[i] until
+// a null byte.
 //------------------------------------------------------------
+local int64 str_table_off;
+
 FSeek(hdr.offset_strings);
-PSB_PackedArray string_offsets <comment="Offsets into strings_data">;
+str_table_off = FTell();
+PSB_PackedArray string_offsets <bgcolor=CLR_STRINGS,
+    comment=SPrintf("String pool offset table (%d strings)",
+                     PsbArrayCount(str_table_off))>;
+local int string_count = PsbArrayCount(str_table_off);
 
+// Display the actual strings from the pool
 FSeek(hdr.offset_strings_data);
-if (hdr.offset_chunk_offsets > FTell()) {
-    section_size = hdr.offset_chunk_offsets - FTell();
-    if (section_size > FileSize() - FTell())
-        section_size = FileSize() - FTell();
-    if (section_size > 0)
-        FSeek(FTell() + section_size);
+
+// Read and comment the string pool data
+local int string_bytes = hdr.offset_chunk_offsets - hdr.offset_strings_data;
+if (string_bytes < 0 || string_bytes > FileSize() - FTell())
+    string_bytes = FileSize() - FTell();
+if (string_bytes > 0x100000)  // Sanity cap
+    string_bytes = 0x100000;
+
+if (string_bytes > 0) {
+    // Show strings as parsed entities (max first 500)
+    local int si;
+    local int show_count = string_count;
+    if (show_count > 500) show_count = 500;
+
+    for (si = 0; si < show_count; si++) {
+        local int rel_off = (int)PsbArrayValue(str_table_off, si);
+        local int64 str_abs = hdr.offset_strings_data + rel_off;
+        local string s = ReadStringAt(str_abs);
+    }
+
+    // Read the remaining raw pool bytes
+    if (hdr.offset_chunk_offsets > FTell()) {
+        section_size = hdr.offset_chunk_offsets - FTell();
+        if (section_size > FileSize() - FTell())
+            section_size = FileSize() - FTell();
+        if (section_size > 0) {
+            uchar string_pool[section_size] <bgcolor=CLR_STRINGS,
+                comment="String pool raw data (null-terminated ASCII strings)">;
+        }
+    }
 }
 
 //------------------------------------------------------------
-// Resource tables.  Resource_N values index these arrays:
+// Resource tables
+//
+// chunk_offsets: PSB_PackedArray of relative offsets from
+//                offset_chunk_data for each resource.
+// chunk_lengths: PSB_PackedArray of byte lengths.
+//
+// Resource_N values in the entries section index these arrays:
 //   resource_ptr = offset_chunk_data + chunk_offsets[index]
 //   resource_len = chunk_lengths[index]
 //------------------------------------------------------------
 FSeek(hdr.offset_chunk_offsets);
 local int64 chunk_offsets_array_off = FTell();
-PSB_PackedArray chunk_offsets <comment="Resource offsets relative to chunk_data">;
+PSB_PackedArray chunk_offsets <bgcolor=CLR_RESOURCE,
+    comment=SPrintf("Resource offsets (relative to chunk_data), %d entries",
+                     PsbArrayCount(chunk_offsets_array_off))>;
 
 FSeek(hdr.offset_chunk_lengths);
 local int64 chunk_lengths_array_off = FTell();
-PSB_PackedArray chunk_lengths <comment="Resource byte lengths">;
+PSB_PackedArray chunk_lengths <bgcolor=CLR_RESOURCE,
+    comment=SPrintf("Resource byte lengths, %d entries",
+                     PsbArrayCount(chunk_lengths_array_off))>;
 
 //------------------------------------------------------------
-// Resource chunks.  For this pimg all resources are TLG5.0 streams.
-// Some chunks are followed by alignment/padding bytes, so this uses
-// chunk_lengths rather than the next TLG magic to define each payload.
+// Resource chunks
+//
+// Each chunk is either a TLG image stream or raw data.
+// Chunk N's name is strings[N] from the string table.
+// Chunk N's data spans:
+//   [offset_chunk_data + chunk_offsets[N],
+//    offset_chunk_data + chunk_offsets[N] + chunk_lengths[N])
+//
+// After each chunk there may be padding to align the next chunk.
 //------------------------------------------------------------
 local uint32 chunk_count = PsbArrayCount(chunk_offsets_array_off);
 local uint32 chunk_i;
@@ -427,17 +1102,28 @@ for (chunk_i = 0; chunk_i < chunk_count; chunk_i++) {
     chunk_start = hdr.offset_chunk_data + chunk_rel;
     g_chunk_end = chunk_start + chunk_len_i64;
 
+    // Get resource name from string table
+    local string res_name = "";
+    if (chunk_i < string_count) {
+        local int str_rel = (int)PsbArrayValue(str_table_off, chunk_i);
+        local int64 str_abs = hdr.offset_strings_data + str_rel;
+        res_name = ReadStringAt(str_abs);
+    }
+
     FSeek(chunk_start);
-    if (IsTLG5At(chunk_start)) {
-        TLG5_Resource resource;
+    if (IsTLGAt(chunk_start)) {
+        TLG_Resource resource <comment=SPrintf("Resource[%u] \"%s\"", chunk_i, res_name)>;
     } else {
         chunk_len_safe = chunk_len_i64;
         if (chunk_len_safe > FileSize() - FTell())
             chunk_len_safe = FileSize() - FTell();
-        if (chunk_len_safe > 0)
-            FSeek(FTell() + chunk_len_safe);
+        if (chunk_len_safe > 0) {
+            uchar raw_data[chunk_len_safe] <bgcolor=CLR_RESOURCE,
+                comment=SPrintf("Resource[%u] \"%s\" (raw)", chunk_i, res_name)>;
+        }
     }
 
+    // Handle inter-chunk padding
     if (chunk_i + 1 < chunk_count)
         chunk_next_start = hdr.offset_chunk_data +
             PsbArrayValue(chunk_offsets_array_off, chunk_i + 1);
@@ -448,6 +1134,21 @@ for (chunk_i = 0; chunk_i < chunk_count; chunk_i++) {
     if (padding_len > 0) {
         padding_size = padding_len;
         FSeek(g_chunk_end);
-        FSeek(FTell() + padding_size);
+        if (padding_size > 0 && padding_size < 65536)
+            FSeek(FTell() + padding_size);
     }
 }
+
+//============================================================
+// Summary — printed at the end for quick reference
+//============================================================
+Printf("\n========================================\n");
+Printf("PSB File Summary\n");
+Printf("========================================\n");
+Printf("Version:        %u\n", hdr.version);
+Printf("Encrypt:        %u\n", hdr.encrypt);
+Printf("Name b-tree:    %d names\n", str3_count2);
+Printf("  Sample names: %s\n", name_summary);
+Printf("String table:   %d strings\n", string_count);
+Printf("Resource count: %u chunks\n", chunk_count);
+Printf("========================================\n");

@@ -23,8 +23,10 @@ from static_extract.bres_bootstrap import (
     bres_key_from_url,
     choose_dotnet_x86,
     decode_bres_root,
+    decompile_tjs2,
     derive_drip_program,
     find_bootstrap_prefix,
+    find_bootstrap_prefix_from_source,
     find_bootstrap_url,
     iter_auto_salt_candidates,
     load_salt,
@@ -192,10 +194,24 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("STARTUP.TJS did not decrypt to TJS2100")
     debug(args, f"STARTUP.TJS decrypted bytes={len(startup_plain)}")
 
+    startup_plain_path = work_dir / "STARTUP.TJS.dec"
+    startup_source_path = work_dir / "STARTUP.TJS"
+    bootstrap_plain_path = work_dir / "BOOTSTRAP.dec"
+    dll_path = work_dir / "bootstrap.dll"
+    drip_path = args.out or (work_dir / "drip_program.json")
+
+    write_file(work_dir / "bres_salt.bin", salt)
+    write_file(work_dir / "STARTUP_TJS.rcdata.bin", startup_cipher)
+    write_file(startup_plain_path, startup_plain)
+    try:
+        startup_source = decompile_tjs2(repo_root, startup_plain_path, startup_source_path)
+    except ValueError as exc:
+        debug(args, f"{exc}; STARTUP.TJS source output unavailable")
+        startup_source = None
+
     strings = parse_tjs_strings(startup_plain)
     bootstrap_url = find_bootstrap_url(strings)
     bootstrap_key = bres_key_from_url(bootstrap_url)
-    bootstrap_prefix = find_bootstrap_prefix(strings)
     bootstrap_plain = decrypt_bres(bootstrap_cipher, bootstrap_key, salt)
     try:
         dll_bytes = zlib.decompress(bootstrap_plain[args.bootstrap_zlib_offset :])
@@ -208,14 +224,6 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("decompressed BOOTSTRAP payload is not a PE DLL; check --bootstrap-zlib-offset or format")
     debug(args, f"BOOTSTRAP decrypted bytes={len(bootstrap_plain)} dll_bytes={len(dll_bytes)}")
 
-    startup_plain_path = work_dir / "STARTUP.TJS.dec"
-    bootstrap_plain_path = work_dir / "BOOTSTRAP.dec"
-    dll_path = work_dir / "bootstrap.dll"
-    drip_path = args.out or (work_dir / "drip_program.json")
-
-    write_file(work_dir / "bres_salt.bin", salt)
-    write_file(work_dir / "STARTUP_TJS.rcdata.bin", startup_cipher)
-    write_file(startup_plain_path, startup_plain)
     write_file(work_dir / "BOOTSTRAP.rcdata.bin", bootstrap_cipher)
     write_file(bootstrap_plain_path, bootstrap_plain)
     write_file(dll_path, dll_bytes)
@@ -225,6 +233,15 @@ def main(argv: list[str] | None = None) -> int:
     config = parse_config_table(dll_path, args.table_rva)
     unique = require_config(config, "UNIQUE").decode("utf-16le")
     warning = require_config(config, "WARNING").decode("ascii")
+    try:
+        if startup_source is None:
+            raise ValueError("STARTUP.TJS source is unavailable")
+        bootstrap_prefix = find_bootstrap_prefix_from_source(startup_source)
+        debug(args, "bootstrap_prefix source=STARTUP.TJS decompiled _bootStrap call")
+    except ValueError as exc:
+        debug(args, f"{exc}; falling back to STARTUP.TJS string-pool 'all' candidates")
+        bootstrap_prefix = find_bootstrap_prefix(strings)
+        debug(args, "bootstrap_prefix source=STARTUP.TJS string-pool 'all' candidate")
     final_bootstrap = bootstrap_prefix + warning
     debug(args, f"DLL config labels={','.join(sorted(config))}")
 
@@ -241,6 +258,7 @@ def main(argv: list[str] | None = None) -> int:
         "outputs": {
             "work_dir": str(work_dir),
             "startup_dec": str(startup_plain_path),
+            "startup_source": str(startup_source_path),
             "bootstrap_dec": str(bootstrap_plain_path),
             "dll": str(dll_path),
             "drip_program": str(drip_path),

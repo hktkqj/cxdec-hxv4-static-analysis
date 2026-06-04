@@ -26,11 +26,11 @@ python src\static_extract\static_xp3_recover.py --exe path\to\game.exe
 1. 从目标 EXE 的 PE Resources 提取 `STARTUP.TJS`、`BOOTSTRAP`、可选 `PLUGIN` 和 `TEXT/127`。
 2. 默认先扫描目标 EXE 汇编中的 `salt_ptr` / `0x2000` 初始化赋值；若原始 packed EXE 没有可见 xref，则回退到 `forcedataxp3` / `TEXT` / `V2Link` 数据邻域定位 0x2000 字节 bres salt，并用 `STARTUP.TJS -> TJS2100\0` 校验；也可显式传 `--salt-rva` / `--salt-file` / `--salt-file-offset`。
 3. 用 `SHA3-384(path_key_utf16le + salt) + ChaCha8` 解密 bres:// 资源。
-4. 解析 `STARTUP.TJS` 的 TJS2 常量池，取得 BOOTSTRAP URL 和脚本级 `System.bootStrap` 参数。
+4. 解析 `STARTUP.TJS` 的 TJS2 常量池取得 BOOTSTRAP URL，并用 `tools/tjs2-decompiler` 反编译源码后优先从 `_bootStrap("...")` 提取脚本级 prefix；反编译不可用时回退到常量池中包含 `all` 的候选字符串。
 5. 解密 `BOOTSTRAP`，跳过 8 字节 header 后 zlib 解压出随机加密 DLL。
 6. 读取 DLL 配置表中的 `UNIQUE` 和 `WARNING`。
 7. 按 DLL 内 `System_bootStrap_callback` 的真实逻辑拼出最终 bootstrap 字符串。
-8. 调用 `FilterManagerDerive` 离线加载 DLL，执行内部派生函数，生成 `data/static_recover/drip_program.json`。
+8. 调用 `FilterManagerDerive` 离线加载 DLL，执行内部派生函数，并由工具自动解析 archive seed：`--archive-seed-hex` 优先，否则使用 DLL RVA `0x81758` 的非零静态 seed，若为全 0 则使用 `FilterManager_ArchiveUpdate` 内嵌默认 seed。
 9. 使用该 JSON 验证或提取 XP3。
 
 验证 `scn.xp3`：

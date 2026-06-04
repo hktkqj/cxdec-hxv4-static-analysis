@@ -317,11 +317,164 @@ def find_bootstrap_url(strings: list[str]) -> str:
     raise ValueError("could not find bootstrap bres URL in STARTUP.TJS strings")
 
 
-def find_bootstrap_prefix(strings: list[str]) -> str:
+def decompile_tjs2(repo_root: Path, input_path: Path, output_path: Path) -> str:
+    tool = repo_root / "tools" / "tjs2-decompiler" / "tjs2_decompiler.py"
+    if not tool.exists():
+        raise ValueError(f"could not find TJS2 decompiler: {tool}")
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(tool), str(input_path), "-o", str(output_path), "-e", "utf-8"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        details = (exc.stderr or exc.stdout or "").strip()
+        suffix = f": {details}" if details else ""
+        raise ValueError(f"could not decompile STARTUP.TJS bytecode{suffix}") from exc
+    if completed.stderr:
+        print(completed.stderr, file=sys.stderr, end="")
+    return output_path.read_text(encoding="utf-8-sig")
+
+
+def _skip_tjs_space(source: str, offset: int) -> int:
+    while offset < len(source) and source[offset].isspace():
+        offset += 1
+    return offset
+
+
+def _read_tjs_string_literal(source: str, offset: int) -> tuple[str, int]:
+    quote = source[offset]
+    if quote not in ("'", '"'):
+        raise ValueError("TJS string literal must start with a quote")
+    offset += 1
+    result: list[str] = []
+    while offset < len(source):
+        char = source[offset]
+        offset += 1
+        if char == quote:
+            return "".join(result), offset
+        if char != "\\":
+            result.append(char)
+            continue
+        if offset >= len(source):
+            break
+        escape = source[offset]
+        offset += 1
+        if escape == "n":
+            result.append("\n")
+        elif escape == "r":
+            result.append("\r")
+        elif escape == "t":
+            result.append("\t")
+        elif escape == "b":
+            result.append("\b")
+        elif escape == "f":
+            result.append("\f")
+        elif escape == "v":
+            result.append("\v")
+        elif escape in ("\\", "'", '"'):
+            result.append(escape)
+        elif escape == "x" and offset + 2 <= len(source):
+            result.append(chr(int(source[offset : offset + 2], 16)))
+            offset += 2
+        elif escape == "u" and offset + 4 <= len(source):
+            result.append(chr(int(source[offset : offset + 4], 16)))
+            offset += 4
+        else:
+            result.append(escape)
+    raise ValueError("unterminated TJS string literal")
+
+
+def find_bootstrap_prefix_from_source(source: str) -> str:
+    needle = "_bootStrap"
+    offset = 0
+    while True:
+        index = source.find(needle, offset)
+        if index < 0:
+            break
+        offset = index + len(needle)
+        call_start = _skip_tjs_space(source, offset)
+        if call_start >= len(source) or source[call_start] != "(":
+            continue
+        first_arg = _skip_tjs_space(source, call_start + 1)
+        if first_arg < len(source) and source[first_arg] in ("'", '"'):
+            return _read_tjs_string_literal(source, first_arg)[0]
+    raise ValueError("could not find System.bootStrap prefix string in STARTUP.TJS source")
+
+
+def iter_bootstrap_prefix_candidates(strings: list[str]) -> list[str]:
+    seen: set[str] = set()
+    candidates: list[str] = []
     for value in strings:
-        if "All Rights Reserved." in value:
-            return value
-    raise ValueError("could not find System.bootStrap prefix string in STARTUP.TJS strings")
+        if not value or value in seen or "all" not in value.casefold():
+            continue
+        seen.add(value)
+        candidates.append(value)
+    return candidates
+
+
+def find_bootstrap_prefix(strings: list[str]) -> str:
+    candidates = iter_bootstrap_prefix_candidates(strings)
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise ValueError("could not find System.bootStrap prefix string with 'all' in STARTUP.TJS strings")
+
+    reserved = [
+        value
+        for value in candidates
+        if "right" in value.casefold() or "reserved" in value.casefold()
+    ]
+    if len(reserved) == 1:
+        return reserved[0]
+    if reserved:
+        candidates = reserved
+
+    preview = ", ".join(repr(value) for value in candidates[:5])
+    raise ValueError(
+        "ambiguous System.bootStrap prefix string in STARTUP.TJS strings; "
+        f"{len(candidates)} candidates contain 'all': {preview}"
+    )
+
+
+def _filter_manager_tool_paths(repo_root: Path) -> tuple[Path, Path]:
+    project = repo_root / "tools" / "FilterManagerDerive" / "FilterManagerDerive.csproj"
+    tool = project.parent / "bin" / "Debug" / "net8.0" / "FilterManagerDerive.dll"
+    return project, tool
+
+
+def ensure_filter_manager_derive(repo_root: Path) -> Path:
+    csproj, tool = _filter_manager_tool_paths(repo_root)
+    source_files = list(csproj.parent.glob("*.cs")) + [csproj]
+    needs_build = not tool.exists() or any(path.stat().st_mtime > tool.stat().st_mtime for path in source_files)
+    if needs_build:
+        run_command(["dotnet", "build", str(csproj), "-p:PlatformTarget=x86"], repo_root)
+    return tool
+
+
+def _filter_manager_derive_args(
+    *,
+    tool: Path,
+    dotnet_x86: Path,
+    dll_path: Path,
+    output: Path,
+    bootstrap_prefix: str,
+    archive_text: str,
+) -> list[str]:
+    return [
+        str(dotnet_x86),
+        str(tool),
+        "--dll",
+        str(dll_path),
+        "--out",
+        str(output),
+        "--bootstrap-prefix",
+        bootstrap_prefix,
+        "--archive-text",
+        archive_text,
+    ]
 
 
 def parse_config_table(dll_path: Path, table_rva: int) -> dict[str, bytes]:
@@ -380,26 +533,16 @@ def derive_drip_program(
     bootstrap_prefix: str,
     archive_text: str,
 ) -> None:
-    tool = repo_root / "tools" / "FilterManagerDerive" / "bin" / "Debug" / "net8.0" / "FilterManagerDerive.dll"
-    csproj = repo_root / "tools" / "FilterManagerDerive" / "FilterManagerDerive.csproj"
-    source_files = list(csproj.parent.glob("*.cs")) + [csproj]
-    needs_build = not tool.exists() or any(path.stat().st_mtime > tool.stat().st_mtime for path in source_files)
-    if needs_build:
-        run_command(["dotnet", "build", str(csproj), "-p:PlatformTarget=x86"], repo_root)
-
+    tool = ensure_filter_manager_derive(repo_root)
     run_command(
-        [
-            str(dotnet_x86),
-            str(tool),
-            "--dll",
-            str(dll_path),
-            "--out",
-            str(output),
-            "--bootstrap-prefix",
-            bootstrap_prefix,
-            "--archive-text",
-            archive_text,
-        ],
+        _filter_manager_derive_args(
+            tool=tool,
+            dotnet_x86=dotnet_x86,
+            dll_path=dll_path,
+            output=output,
+            bootstrap_prefix=bootstrap_prefix,
+            archive_text=archive_text,
+        ),
         repo_root,
     )
 

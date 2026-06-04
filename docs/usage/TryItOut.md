@@ -45,10 +45,11 @@ video.xp3    voice.xp3
 先用 `--skip-derive --debug` 确认目标游戏是否属于当前 bres/BOOTSTRAP/Hxv4 加密链路。所有中间文件建议写到目标游戏目录的 `temp` 下：
 
 ```powershell
-$game = "F:\SteamLibrary\steamapps\common\CafeStella"
+$game = "game_directory_path"
+$executable = "$game\<executable_name>.exe"
 
 python src\static_extract\static_xp3_recover.py `
-  --exe "$game\CafeStella.exe" `
+  --exe $executable `
   --work-dir "$game\temp\static_recover_probe" `
   --skip-derive `
   --debug
@@ -59,6 +60,7 @@ python src\static_extract\static_xp3_recover.py `
 ```text
 [debug] STARTUP.TJS decrypted bytes=...
 [debug] BOOTSTRAP decrypted bytes=... dll_bytes=...
+[debug] bootstrap_prefix source=STARTUP.TJS decompiled _bootStrap call
 [debug] DLL config labels=PARAMS,PUBKEY,UNIQUE,WARNING
 archive_unique_key: ...
 ```
@@ -77,7 +79,7 @@ archive_unique_key = {Kanna+Natsume+Nozomi+Mei+Suzune}
 
 ```powershell
 python src\static_extract\static_xp3_recover.py `
-  --exe "$game\CafeStella.exe" `
+  --exe $executable `
   --work-dir "$game\temp\static_recover" `
   --debug
 ```
@@ -86,10 +88,11 @@ python src\static_extract\static_xp3_recover.py `
 
 ```text
 $game\temp\static_recover\static_recover.summary.json
+$game\temp\static_recover\STARTUP.TJS
 $game\temp\static_recover\drip_program.json
 ```
 
-`drip_program.json` 必须和生成它的目标 EXE/DLL 配套使用，不要混用其他游戏或其他版本生成的 JSON。
+`STARTUP.TJS` 是反编译后的源码，用于检查 `_bootStrap("...")` prefix；`drip_program.json` 必须和生成它的目标 EXE/DLL 配套使用，不要混用其他游戏或其他版本生成的 JSON。`FilterManagerDerive` 会在生成时打印 `archive seed: ...`，用于确认当前样本走的是 DLL 静态 seed 还是 `ArchiveUpdate` 默认 seed。
 
 ---
 
@@ -120,7 +123,7 @@ data.xp3: checked=20 failed=0 unresolved_filter=0 limited_to=20
 
 ```powershell
 python src\static_extract\static_xp3_recover.py `
-  --exe "$game\CafeStella.exe" `
+  --exe $executable `
   --work-dir "$game\temp\static_recover" `
   --xp3 "$game\main.xp3" "$game\scn.xp3" `
   --verify `
@@ -280,6 +283,7 @@ pip install pycryptodome
 | BOOTSTRAP 无法 zlib 解压 | BOOTSTRAP key、`--bootstrap-zlib-offset` 或 payload 格式 |
 | 解压结果不是 PE DLL | BOOTSTRAP payload 布局或压缩偏移 |
 | 配置表无 `UNIQUE` / `WARNING` | `--table-rva` |
+| `bootstrap_prefix` 错误 | 检查 `work-dir\STARTUP.TJS` 中 `_bootStrap("...")` 的第一参数；反编译失败时检查常量池中包含 `all` 的候选 |
 | `FilterManagerDerive` 失败 | DLL 派生函数 RVA / 调用约定 |
 | `verify` 出现 Adler mismatch | `drip_program.json` 是否来自同一目标、Hxv4 映射、open flag 或 archive key update |
 

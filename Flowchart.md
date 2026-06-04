@@ -15,11 +15,13 @@ flowchart TD
     D --> E
     E --> F{"校验 STARTUP.TJS 明文<br/>文件头是否为 TJS2100\\0"}
     F -- "否" --> F1["停止：STARTUP.TJS 解密失败<br/>检查 salt 位置、salt 长度、TEXT/127 path key、资源来源 EXE"]
-    F -- "是" --> G["解析 TJS2 bytecode chunk<br/>读取 DATA chunk<br/>只解析字符串池，不做完整反编译"]
+    F -- "是" --> G["解析 TJS2 bytecode chunk<br/>读取 DATA chunk 字符串池<br/>并输出 STARTUP.TJS.dec"]
+    G --> G1["反编译 STARTUP.TJS<br/>tools/tjs2-decompiler<br/>输出 work-dir/STARTUP.TJS"]
 
     G --> H["查找 BOOTSTRAP URL<br/>字符串满足 bres://./.../bootstrap"]
     H --> I["提取 BOOTSTRAP path key<br/>取 URL 中 bres://./ 后第一段"]
-    G --> J["查找 System.bootStrap prefix<br/>当前规则：字符串包含 All Rights Reserved.<br/>作为脚本传给 DLL 的第一段密码文本"]
+    G1 --> J["查找 System.bootStrap prefix<br/>优先解析源码 _bootStrap(\"...\") 第一参数<br/>失败时回退到常量池中包含 all 的字符串"]
+    G --> J
 
     B2 --> K["解密 BOOTSTRAP<br/>算法同 bres：SHA3-384(path_key_utf16le + salt) + ChaCha8<br/>path_key = bootstrap_key"]
     C --> K
@@ -37,11 +39,12 @@ flowchart TD
 
     J --> Q["构造最终 bootstrap 输入<br/>final_bootstrap = prefix + WARNING<br/>传给 DLL 内部 System_bootStrap 派生逻辑"]
     P2 --> Q
-    O --> R["运行 FilterManagerDerive<br/>x86 .NET 工具离线加载 bootstrap.dll<br/>输入：bootstrap.dll、bootstrap_prefix、UNIQUE"]
+    O --> R["运行 FilterManagerDerive<br/>x86 .NET 工具离线加载 bootstrap.dll<br/>输入：bootstrap.dll、bootstrap_prefix、UNIQUE<br/>archive seed 由工具自动解析"]
     Q --> R
     P1 --> R
     P3 --> R
-    R --> S["执行 DLL 内部派生函数<br/>复现运行时 FilterManager 初始化<br/>得到 DripValue VM 状态和 Hxv4 解密材料"]
+    R --> R1["解析 archive seed<br/>--archive-seed-hex 优先<br/>否则读取 DLL RVA 0x81758<br/>全 0 时扫描 ArchiveUpdate 默认常量"]
+    R1 --> S["执行 DLL 内部派生函数<br/>复现运行时 FilterManager 初始化<br/>得到 DripValue VM 状态和 Hxv4 解密材料"]
     S --> T["生成 drip_program.json<br/>后续 XP3 解密的核心状态文件"]
 
     T --> T1["hxv4_key<br/>32 字节 XChaCha20-Poly1305 key<br/>用于打开 Hxv4 映射表"]
@@ -119,9 +122,9 @@ digest = SHA3-384(path_key.encode("utf-16le") + bres_salt)
 plaintext = ChaCha8(digest-derived stream) XOR ciphertext
 ```
 
-`STARTUP.TJS` 解密后只解析 TJS2 `DATA` chunk 的字符串池，用来找到 BOOTSTRAP 的 `bres://.../bootstrap` URL 和脚本级 `System.bootStrap` prefix。`BOOTSTRAP` 解密后跳过 header 并 zlib 解压出 `bootstrap.dll`，随后读取 DLL 配置表中的 `UNIQUE`、`WARNING`、`PARAMS` 等数据。
+`STARTUP.TJS` 解密后会保留两份中间产物：`STARTUP.TJS.dec` 是 TJS2 字节码，反编译后的 `STARTUP.TJS` 是源码文本。BOOTSTRAP URL 仍来自 TJS2 `DATA` chunk 字符串池；脚本级 `System.bootStrap` prefix 优先从源码中的 `_bootStrap("...")` 第一参数取得，反编译失败时才回退到常量池中包含 `all` 的字符串。`BOOTSTRAP` 解密后跳过 header 并 zlib 解压出 `bootstrap.dll`，随后读取 DLL 配置表中的 `UNIQUE`、`WARNING`、`PARAMS` 等数据。
 
-`FilterManagerDerive` 离线加载 `bootstrap.dll`，传入 `bootstrap_prefix` 和 `UNIQUE`，让 DLL 自身执行与运行时相同的派生逻辑，最终导出：
+`FilterManagerDerive` 离线加载 `bootstrap.dll`，传入 `bootstrap_prefix` 和 `UNIQUE`，让 DLL 自身执行底层派生逻辑。archive seed 在工具内自动确定：显式 `--archive-seed-hex` 优先，否则读取 DLL RVA `0x81758` 的 8 字节静态 seed；如果该位置全 0，则扫描 `FilterManager_ArchiveUpdate` 内的默认常量，得到默认 seed `ceeaaf2cefbeadde`。最终导出：
 
 - `hxv4_key` / `hxv4_nonce0` / `hxv4_nonce1`
 - `holder_words`

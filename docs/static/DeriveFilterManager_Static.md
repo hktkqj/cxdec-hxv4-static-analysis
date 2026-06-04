@@ -166,9 +166,11 @@ magic = TJS2100\0
 size  = 6944 bytes
 ```
 
-### 4. STARTUP.TJS 字节码解析
+### 4. STARTUP.TJS 字节码解析和源码反编译
 
-解密后的 `STARTUP.TJS.dec` 是 TJS2 字节码。脚本解析 chunk 列表，找到 `DATA` chunk，再读取字符串池。
+解密后的 `STARTUP.TJS.dec` 是 TJS2 字节码。脚本会先把它写入 `work-dir`，再调用 `tools/tjs2-decompiler/tjs2_decompiler.py` 生成源码文本 `STARTUP.TJS`。
+
+BOOTSTRAP URL 仍从 TJS2 `DATA` chunk 字符串池读取。脚本级 `System.bootStrap` prefix 优先从反编译源码中的 `_bootStrap("...")` 第一参数取得；如果反编译失败或源码中无法定位该调用，则回退到常量池中包含 `all` 的字符串候选。
 
 关键字符串为：
 
@@ -183,7 +185,7 @@ Sabbat_of_the_Witch (C)YUZUSOFT/JUNOS INC. All Rights Reserved.
 xuf2b4we2c5y8mi44vwhm6tqee
 ```
 
-第二项是脚本级 `System.bootStrap` 第一个参数，也就是后续 `FilterManagerDerive --bootstrap-prefix` 的值。
+第二项是旧样本中常量池里可直接看到的脚本级 `System.bootStrap` 第一个参数，也就是后续 `FilterManagerDerive --bootstrap-prefix` 的值。新流程不再要求字符串精确包含 `All Rights Reserved.`；源码 `_bootStrap` 调用优先，常量池只作为兜底。
 
 ### 5. BOOTSTRAP 解密和 DLL 提取
 
@@ -259,7 +261,20 @@ Sabbat_of_the_Witch (C)YUZUSOFT/JUNOS INC. All Rights Reserved.Warning! Extracti
 |-----|------|
 | `0x0E2D0` | `FilterManager` 构造函数 |
 | `0x15630` | bootstrap 派生函数，输入最终 bootstrap 字符串和 `PARAMS` |
-| `0x157D0` | archive key update，输入 `UNIQUE` 和 archive seed |
+| `0x157D0` | archive key update，输入 `UNIQUE` 和解析后的 archive seed |
+
+archive seed 由 `FilterManagerDerive` 自动决定：
+
+1. 显式 `--archive-seed-hex` 优先，用于调试或特殊样本。
+2. 否则读取 `bootstrap.dll` RVA `0x81758` 的 8 字节静态 seed。
+3. 如果该位置全 0，则扫描 `0x157D0` 函数体中的默认 seed 常量；`0x2CAFEACE, 0xDEADBEEF` 按小端组合为 `ceeaaf2cefbeadde`。
+
+工具会打印实际使用的 seed，例如：
+
+```text
+archive seed: bf22368a48210206
+archive seed: ceeaaf2cefbeadde
+```
 
 生成的 JSON 包含：
 
@@ -342,6 +357,7 @@ data/static_recover/
 |------|------|
 | `STARTUP_TJS.rcdata.bin` | PE 资源中的加密 STARTUP.TJS |
 | `STARTUP.TJS.dec` | 解密后的 TJS2 字节码 |
+| `STARTUP.TJS` | 由 `tools/tjs2-decompiler` 反编译出的 TJS 源码，用于优先提取 `_bootStrap` 参数 |
 | `BOOTSTRAP.rcdata.bin` | PE 资源中的加密 BOOTSTRAP |
 | `BOOTSTRAP.dec` | 解密后的 BOOTSTRAP 载荷 |
 | `bootstrap.dll` | BOOTSTRAP 解包出的 DLL |
@@ -397,7 +413,7 @@ TJS2100\0
 
 ### 3. 解析 TJS2 常量池
 
-从 `STARTUP.TJS.dec` 的 DATA chunk 字符串池取到：
+从 `STARTUP.TJS.dec` 的 DATA chunk 字符串池取到 BOOTSTRAP URL；脚本还会尝试反编译并输出源码 `STARTUP.TJS`，优先从源码 `_bootStrap("...")` 的第一参数确定 bootstrap prefix。旧样本中常量池也能看到：
 
 ```text
 bres://./xuf2b4we2c5y8mi44vwhm6tqee/bootstrap
@@ -483,6 +499,8 @@ sub_100157D0(manager + 8, archive_text_utf16le, byte_len, archive_seed)
 ```text
 {NENeMEGURuTSUMUGiTOUKoWAKANa}
 ```
+
+`archive_seed` 不需要由 Python 判断。当前工具会自动使用 `--archive-seed-hex`、DLL RVA `0x81758` 非零静态 seed、或 `FilterManager_ArchiveUpdate` 内嵌默认 seed 三者之一。对于 RVA `0x81758` 全 0 的样本，默认 seed 是 `ceeaaf2cefbeadde`。
 
 ## 跨游戏适配参数
 
@@ -639,7 +657,8 @@ no valid salt recovered
 |------|----------|
 | 游戏进程 | 不启动 |
 | debugger | 不使用 |
-| bootstrap 字符串 | STARTUP.TJS 常量池 + DLL `WARNING` |
+| bootstrap 字符串 | 反编译 `STARTUP.TJS` 中 `_bootStrap` 第一参数，失败时用常量池 `all` 候选；再拼 DLL `WARNING` |
 | context | 离线调用 DLL 内部派生函数生成 |
 | DLL | 从 EXE `RCDATA/BOOTSTRAP` 解密解包 |
+| archive seed | `FilterManagerDerive` 自动解析：显式参数、DLL RVA `0x81758`、或 `ArchiveUpdate` 默认常量 |
 | 主要风险 | 需要能从初始化汇编或 packed 数据邻域自动定位 salt，或显式提供正确 salt PE RVA / 文件偏移；同时 x86 dotnet 要能加载目标 DLL |

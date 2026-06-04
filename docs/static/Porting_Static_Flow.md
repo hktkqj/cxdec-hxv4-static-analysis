@@ -47,14 +47,16 @@ python src\static_extract\static_xp3_recover.py `
 [debug] resource sizes: STARTUP.TJS=6904 BOOTSTRAP=327658 PLUGIN=54 salt=8192
 [debug] STARTUP.TJS decrypted bytes=6904
 [debug] BOOTSTRAP decrypted bytes=327658 dll_bytes=763392
+[debug] bootstrap_prefix source=STARTUP.TJS decompiled _bootStrap call
 [debug] DLL config labels=PARAMS,PUBKEY,UNIQUE,WARNING
 startup_key: xfgp9i53ygpktxjfjyzcjf5hg2
 bootstrap_key: daagz6fftpcf5ayewqa7246z6w
 salt_source: F:\SteamLibrary\steamapps\common\CafeStella\CafeStella.exe:auto V2Link-before anchor RVA ... salt VA ... / RVA ... / file offset ...
+bootstrap_prefix: Cafe Stella and the Reapers Butterflies (C)YUZUSOFT/JUNOS INC. All Rights Reserved.
 archive_unique_key: {Kanna+Natsume+Nozomi+Mei+Suzune}
 ```
 
-如果 `STARTUP.TJS did not decrypt to TJS2100`，优先检查自动定位输出、`--salt-rva` / `--salt-file-offset` / `--salt-file`。如果 DLL 配置表缺少 `UNIQUE` 或 `WARNING`，优先检查 `--table-rva`。
+如果 `STARTUP.TJS did not decrypt to TJS2100`，优先检查自动定位输出、`--salt-rva` / `--salt-file-offset` / `--salt-file`。如果 prefix 可疑，检查 `work-dir\STARTUP.TJS` 中反编译出的 `_bootStrap("...")`；反编译不可用时脚本会回退到常量池中包含 `all` 的字符串。如果 DLL 配置表缺少 `UNIQUE` 或 `WARNING`，优先检查 `--table-rva`。
 
 ### 3. 生成静态 drip program
 
@@ -71,10 +73,11 @@ python src\static_extract\static_xp3_recover.py `
 
 ```text
 $game\temp\static_recover\static_recover.summary.json
+$game\temp\static_recover\STARTUP.TJS
 $game\temp\static_recover\drip_program.json
 ```
 
-`drip_program.json` 必须与生成它的目标游戏 EXE/DLL 配套使用；不要混用其他游戏或其他版本生成的 JSON。需要兼容旧文档时，也可以用 `--out` 指定历史文件名。
+`STARTUP.TJS` 是反编译源码，可用于核对 `_bootStrap("...")` prefix。`drip_program.json` 必须与生成它的目标游戏 EXE/DLL 配套使用；不要混用其他游戏或其他版本生成的 JSON。生成时 `FilterManagerDerive` 会打印 `archive seed: ...`，用于确认当前样本使用 DLL 静态 seed 还是 `ArchiveUpdate` 默认 seed。需要兼容旧文档时，也可以用 `--out` 指定历史文件名。
 
 ### 4. 小范围验证 XP3
 
