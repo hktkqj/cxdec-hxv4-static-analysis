@@ -1051,8 +1051,8 @@ class PSBReader:
     def extract_tlg(self) -> tuple[Optional[TLGHeader], bytes]:
         """Extract TLG image data from the PSB file.
 
-        Searches for TLG magic bytes ("TLG5.0" or "TLG0.0") and
-        extracts the image header and raw data.
+        Uses the PSB chunk table and per-resource magic detection. This avoids
+        false positives from arbitrary ``TLG`` byte sequences inside PNG data.
 
         Returns:
             Tuple of (TLGHeader or None, raw_tlg_bytes).
@@ -1060,22 +1060,9 @@ class PSBReader:
         if not self.header:
             raise PSBError("Header not parsed")
 
-        # Start search from resources_offset
-        offset = self.header.resources_offset
-        data = self._data
-
-        while offset < len(data) - 4:
-            if data[offset:offset + 3] == b'TLG':
-                # Found TLG data
-                return self._parse_tlg_data(offset)
-
-            # If not found at resources_offset, search forward
-            offset += 1
-
-        # Try at resources_offset directly
-        res_off = self.header.resources_offset
-        if res_off + 11 < len(data) and data[res_off:res_off + 3] == b'TLG':
-            return self._parse_tlg_data(res_off)
+        for res in self.read_resource_table():
+            if res.resource_type == "tlg" and res.tlg_header is not None:
+                return res.tlg_header, self.read_resource_bytes(res)
 
         return None, b""
 
@@ -1280,6 +1267,20 @@ class PSBReader:
 
         lines.append(f"\n--- RESOURCE DATA (offset 0x{h.resources_offset:08X}) ---")
         try:
+            resources = self.read_resource_table()
+            counts = self.resource_type_counts()
+            if counts:
+                lines.append(
+                    "  Resource Types: "
+                    + ", ".join(f"{name}={count}" for name, count in sorted(counts.items()))
+                )
+            if resources:
+                first = resources[0]
+                head = self.read_resource_bytes(first)[:8]
+                lines.append(
+                    f"  First Resource: {first.resource_type} "
+                    f"{first.name} len={first.length:,} magic={head.hex(' ')}"
+                )
             tlg_header, tlg_data = self.extract_tlg()
             if tlg_header:
                 lines.append(f"  TLG Type:    {tlg_header.magic}")
@@ -1289,9 +1290,9 @@ class PSBReader:
                 lines.append(f"  Block Size:  {tlg_header.block_size}")
                 lines.append(f"  Data Size:   {len(tlg_data):,} bytes")
             else:
-                lines.append(f"  (No TLG header found at resources_offset)")
+                lines.append("  TLG:          none")
         except Exception as e:
-            lines.append(f"  Error extracting TLG: {e}")
+            lines.append(f"  Error reading resource data: {e}")
 
         return "\n".join(lines)
 
