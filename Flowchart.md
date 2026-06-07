@@ -59,7 +59,7 @@ flowchart TD
     Z --> Z2["查找 Hxv4 chunk descriptor<br/>字段：payload_offset、payload_size、flags<br/>flags bit0 = open_flag"]
 
     Z2 --> AA["按 payload_offset / payload_size<br/>从 XP3 文件读取 Hxv4 encrypted payload<br/>格式：16 字节 Poly1305 tag + ciphertext"]
-    T1 --> AB["解密 Hxv4 payload<br/>XChaCha20-Poly1305<br/>key = hxv4_key<br/>nonce = hxv4_nonce[flags & 1]"]
+    T1 --> AB["解密 Hxv4 payload<br/>XChaCha20-Poly1305<br/>key = hxv4_key<br/>nonce = hxv4_nonce[flags*& 1]"]
     T2 --> AB
     Z2 --> AB
     AA --> AB

@@ -163,6 +163,8 @@ class PSBResource:
     file_offset: int
     relative_offset: int
     length: int
+    resource_type: str = "unknown"
+    extension: str = ".bin"
     tlg_header: Optional[TLGHeader] = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -173,6 +175,8 @@ class PSBResource:
             "file_offset": self.file_offset,
             "relative_offset": self.relative_offset,
             "length": self.length,
+            "resource_type": self.resource_type,
+            "extension": self.extension,
         }
         if self.tlg_header:
             item["tlg"] = {
@@ -684,8 +688,36 @@ class PSBReader:
             raise PSBError(f"Root value is {type(value).__name__}, expected object")
         return value
 
+    def _resource_names_from_root(self) -> dict[int, str]:
+        """Return resource index -> object-key filename mappings when present."""
+        names: dict[int, str] = {}
+        try:
+            root = self.read_object_tree()
+        except PSBError:
+            return names
+        for key, value in root.items():
+            if not isinstance(key, str) or not isinstance(value, dict):
+                continue
+            index = value.get("$res")
+            if isinstance(index, int):
+                names.setdefault(index, key)
+        return names
+
+    def _detect_resource_type_at(self, offset: int) -> tuple[str, str, Optional[TLGHeader]]:
+        """Classify an embedded resource by magic bytes."""
+        head = self._data[offset:offset + 16]
+        if head.startswith(b"TLG"):
+            return "tlg", ".tlg", self._parse_tlg_header_at(offset)
+        if head.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "png", ".png", None
+        if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+            return "webp", ".webp", None
+        if head.startswith(b"BM"):
+            return "bmp", ".bmp", None
+        return "unknown", ".bin", None
+
     def read_resource_table(self) -> list[PSBResource]:
-        """Read embedded resource offsets, lengths, and TLG headers."""
+        """Read embedded resource offsets, lengths, names, and magic types."""
         if not self.header:
             raise PSBError("Header not parsed")
         if self._chunk_offsets is None:
@@ -694,17 +726,23 @@ class PSBReader:
             self._chunk_lengths = self.read_psb_array(self.header.offset_chunk_lengths)
 
         strings = self.read_string_table()
+        root_names = self._resource_names_from_root()
         resources: list[PSBResource] = []
         for index, (rel, length) in enumerate(zip(self._chunk_offsets.values, self._chunk_lengths.values)):
             file_offset = self.header.offset_chunk_data + rel
-            tlg = self._parse_tlg_header_at(file_offset)
+            resource_type, extension, tlg = self._detect_resource_type_at(file_offset)
+            name = strings[index] if index < len(strings) else root_names.get(index)
+            if not name:
+                name = f"resource_{index}{extension}"
             resources.append(
                 PSBResource(
                     index=index,
-                    name=strings[index] if index < len(strings) else f"resource_{index}",
+                    name=name,
                     file_offset=file_offset,
                     relative_offset=rel,
                     length=length,
+                    resource_type=resource_type,
+                    extension=extension,
                     tlg_header=tlg,
                 )
             )
@@ -750,13 +788,21 @@ class PSBReader:
     def read_composition(self) -> dict[str, Any]:
         """Return canvas, layers, and layer-to-resource mapping."""
         root = self.read_object_tree()
-        resources = {r.name: r for r in self.read_resource_table()}
+        resource_list = self.read_resource_table()
+        resources = {r.name: r for r in resource_list}
+        resources_by_index = {r.index: r for r in resource_list}
         image_map: dict[int, dict[str, Any]] = {}
         for key, value in root.items():
-            if not (key.endswith(".tlg") and isinstance(value, dict) and "$res" in value):
+            if not (isinstance(key, str) and isinstance(value, dict) and "$res" in value):
                 continue
+            stem, ext = os.path.splitext(key)
+            if ext.casefold() not in (".tlg", ".png", ".webp", ".bmp"):
+                continue
+            if value.get("name") is None:
+                value = dict(value)
+                value["name"] = key
             try:
-                image_map[int(key[:-4])] = value
+                image_map[int(stem)] = value
             except ValueError:
                 continue
         layers = root.get("layers", [])
@@ -774,10 +820,14 @@ class PSBReader:
             if ref:
                 item["resource_index"] = ref["$res"]
                 item["resource_name"] = ref.get("name")
-                res = resources.get(str(ref.get("name")))
+                res = resources_by_index.get(ref["$res"])
+                if res is None:
+                    res = resources.get(str(ref.get("name")))
                 if res:
+                    item["resource_name"] = res.name
                     item["resource_offset"] = res.file_offset
                     item["resource_length"] = res.length
+                    item["resource_type"] = res.resource_type
                     if res.tlg_header:
                         item["tlg_width"] = res.tlg_header.width
                         item["tlg_height"] = res.tlg_header.height
@@ -878,14 +928,18 @@ class PSBReader:
                 raise PSBError(f"Layer {layer.get('name')!r} has no resource_index")
             res = self.get_resource_by_index(res_index)
             stem = self.layer_export_stem(role, layer)
-            path = out_dir / f"{stem}.tlg"
+            path = out_dir / f"{stem}{res.extension}"
             self.write_resource(res, path)
+            expected_png = out_dir / f"{stem}.png"
+            if res.resource_type == "png":
+                expected_png = path
             item = {
                 "role": role,
                 "path": str(path),
                 "layer": layer,
                 "resource": res.to_dict(),
-                "expected_png": str(out_dir / f"{stem}.png"),
+                "source_format": res.resource_type,
+                "expected_png": str(expected_png),
             }
             exported.append(item)
 
@@ -903,7 +957,7 @@ class PSBReader:
         return manifest
 
     def extract_all_tlgs(self, output_dir: str | os.PathLike[str]) -> dict[str, Any]:
-        """Extract every embedded TLG resource and write a full manifest."""
+        """Extract every embedded image resource and write a full manifest."""
         comp = self.read_composition()
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -917,17 +971,21 @@ class PSBReader:
         exported: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         for res in self.read_resource_table():
-            if res.tlg_header is None:
+            if res.resource_type == "unknown":
                 skipped.append(res.to_dict())
                 continue
             stem = self.resource_export_stem(res)
-            path = out_dir / f"{stem}.tlg"
+            path = out_dir / f"{stem}{res.extension}"
             self.write_resource(res, path)
             expected_png = out_dir / f"{stem}.png"
+            if res.resource_type == "png":
+                expected_png = path
             exported.append({
                 "path": str(path),
                 "expected_png": str(expected_png),
                 "resource": res.to_dict(),
+                "source_format": res.resource_type,
+                "needs_conversion": res.resource_type == "tlg",
                 "layers": layers_by_resource.get(res.index, []),
             })
 
@@ -954,6 +1012,7 @@ class PSBReader:
             "width": comp["width"],
             "height": comp["height"],
             "resource_count": len(exported),
+            "resource_types": self.resource_type_counts(),
             "exports": exported,
             "diffs": diffs,
             "skipped": skipped,
@@ -976,7 +1035,18 @@ class PSBReader:
     @staticmethod
     def resource_export_stem(resource: PSBResource) -> str:
         """Stable filename stem for a resource-table export."""
-        return f"res{resource.index:02d}_{resource.name}"
+        name = Path(resource.name).name
+        suffix = Path(name).suffix
+        if suffix.casefold() == resource.extension.casefold():
+            name = name[:-len(suffix)]
+        return f"res{resource.index:02d}_{name}"
+
+    def resource_type_counts(self) -> dict[str, int]:
+        """Count embedded resource types detected by magic bytes."""
+        counts: dict[str, int] = {}
+        for res in self.read_resource_table():
+            counts[res.resource_type] = counts.get(res.resource_type, 0) + 1
+        return counts
 
     def extract_tlg(self) -> tuple[Optional[TLGHeader], bytes]:
         """Extract TLG image data from the PSB file.
@@ -1330,7 +1400,7 @@ def convert_manifest_exports_to_png(
     manifest: dict[str, Any],
     tlg2png_path: str | os.PathLike[str] | None = None,
 ) -> list[dict[str, str]]:
-    """Convert all exported TLG paths listed in an extraction manifest."""
+    """Convert exported TLG paths listed in a manifest; keep PNG exports as-is."""
     converted: list[dict[str, str]] = []
     for item in manifest.get("exports", []):
         if not isinstance(item, dict):
@@ -1339,8 +1409,13 @@ def convert_manifest_exports_to_png(
         dst = item.get("expected_png")
         if not isinstance(src, str) or not isinstance(dst, str):
             continue
-        convert_tlg_to_png(src, dst, tlg2png_path)
-        converted.append({"tlg": src, "png": dst})
+        source_format = item.get("source_format")
+        if source_format == "png":
+            converted.append({"png": dst, "source": src})
+            continue
+        if source_format == "tlg" or Path(src).suffix.casefold() == ".tlg":
+            convert_tlg_to_png(src, dst, tlg2png_path)
+            converted.append({"tlg": src, "png": dst})
     return converted
 
 
@@ -1539,21 +1614,28 @@ def ensure_export_png(
     export: dict[str, Any],
     tlg2png_path: str | os.PathLike[str] | None = None,
 ) -> Path:
-    """Return the extracted PNG path, converting the extracted TLG if needed."""
+    """Return an extracted PNG path, converting TLG resources when needed."""
     png_raw = export.get("expected_png")
-    tlg_raw = export.get("path")
-    if not isinstance(png_raw, str) or not isinstance(tlg_raw, str):
+    source_raw = export.get("path")
+    if not isinstance(png_raw, str) or not isinstance(source_raw, str):
         raise PSBError("Manifest export is missing path/expected_png")
     png_path = Path(png_raw)
-    tlg_path = Path(tlg_raw)
+    source_path = Path(source_raw)
+    source_format = export.get("source_format")
+    if source_format == "png":
+        if not png_path.is_file():
+            raise PSBError(f"Missing extracted PNG resource: {png_path}")
+        return png_path
     if not png_path.is_file():
-        if not tlg_path.is_file():
+        if not source_path.is_file():
             resource = export.get("resource", {})
             raise PSBError(
-                f"Missing extracted TLG for resource "
-                f"{resource.get('index')}:{resource.get('name')}: {tlg_path}"
+                f"Missing extracted {source_format or 'resource'} for resource "
+                f"{resource.get('index')}:{resource.get('name')}: {source_path}"
             )
-        convert_tlg_to_png(tlg_path, png_path, tlg2png_path)
+        if source_format != "tlg" and source_path.suffix.casefold() != ".tlg":
+            raise PSBError(f"Cannot convert resource type {source_format!r} to PNG: {source_path}")
+        convert_tlg_to_png(source_path, png_path, tlg2png_path)
     return png_path
 
 
@@ -1624,6 +1706,46 @@ def composite_plan_from_exports(
     }
 
 
+def export_flat_images_from_manifest(
+    manifest: dict[str, Any],
+    output_dir: str | os.PathLike[str],
+    manifest_dir: Path,
+    tlg2png_path: str | os.PathLike[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Write one PNG output per exported resource when no layer plan exists."""
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results: list[dict[str, Any]] = []
+    for item in manifest.get("exports", []):
+        if not isinstance(item, dict):
+            continue
+        resolved = dict(item)
+        path = item.get("path")
+        expected_png = item.get("expected_png")
+        if isinstance(path, str):
+            resolved["path"] = str(_manifest_file_path(path, manifest_dir))
+        if isinstance(expected_png, str):
+            resolved["expected_png"] = str(_manifest_file_path(expected_png, manifest_dir))
+
+        png_path = ensure_export_png(resolved, tlg2png_path)
+        resource = item.get("resource", {})
+        name = str(resource.get("name") or png_path.name)
+        filename = Path(name).name
+        if Path(filename).suffix.casefold() != ".png":
+            filename = f"{Path(filename).stem}.png"
+        output_path = out_dir / filename
+        if png_path.resolve() != output_path.resolve():
+            shutil.copy2(png_path, output_path)
+        results.append({
+            "diff_name": Path(filename).stem,
+            "output": str(output_path),
+            "resource_index": resource.get("index"),
+            "resource_name": resource.get("name"),
+            "source_format": item.get("source_format"),
+        })
+    return results
+
+
 def composite_all_from_extracted(
     extract_dir: str | os.PathLike[str],
     output_dir: str | os.PathLike[str],
@@ -1641,6 +1763,14 @@ def composite_all_from_extracted(
         raise PSBError(f"Manifest does not contain a diffs index: {manifest_file}")
 
     manifest_dir = manifest_file.parent
+    if not diffs:
+        return export_flat_images_from_manifest(
+            manifest,
+            output_dir,
+            manifest_dir,
+            tlg2png_path=tlg2png_path,
+        )
+
     exports_by_resource = _manifest_exports_by_resource(manifest, manifest_dir)
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1804,14 +1934,20 @@ def composite_diff_direct(
             if not isinstance(res_index, int):
                 raise PSBError(f"Layer {layer.get('name')!r} has no resource_index")
             res = reader.get_resource_by_index(res_index)
-            if res.tlg_header is None:
+            if res.resource_type not in ("tlg", "png"):
                 raise PSBError(
-                    f"Layer {layer.get('name')!r} resource {res.index}:{res.name} is not TLG"
+                    f"Layer {layer.get('name')!r} resource {res.index}:{res.name} "
+                    f"is unsupported type {res.resource_type!r}"
                 )
 
             tlg_path, png_path = layer_tlg_png_paths(actual_work_dir, role, layer)
-            reader.write_resource(res, tlg_path)
-            convert_tlg_to_png(tlg_path, png_path, tlg2png_path)
+            if res.resource_type == "tlg":
+                reader.write_resource(res, tlg_path)
+                convert_tlg_to_png(tlg_path, png_path, tlg2png_path)
+                source_path = tlg_path
+            else:
+                reader.write_resource(res, png_path)
+                source_path = png_path
 
             image = Image.open(png_path).convert("RGBA")
             opacity = int(layer.get("opacity", 255))
@@ -1834,7 +1970,8 @@ def composite_diff_direct(
                 "left": left,
                 "top": top,
                 "opacity": opacity,
-                "tlg": str(tlg_path),
+                "source": str(source_path),
+                "source_format": res.resource_type,
                 "png": str(png_path),
             })
 
@@ -2021,7 +2158,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 
 
 def cmd_extract_all(args: argparse.Namespace) -> int:
-    """Extract all embedded TLG resources and generate manifest."""
+    """Extract all embedded image resources and generate manifest."""
     try:
         reader = PSBReader(args.input)
         manifest = reader.extract_all_tlgs(args.output_dir)
@@ -2103,13 +2240,13 @@ Examples:
     # extract-all
     p_extract_all = sub.add_parser(
         "extract-all",
-        help="Extract every embedded TLG resource and generate manifest",
+        help="Extract every embedded image resource and generate manifest",
     )
     p_extract_all.add_argument("input", help="Path to PSB file (.bin)")
     p_extract_all.add_argument("-o", "--output-dir", required=True,
                                help="Directory for extracted TLG files")
     p_extract_all.add_argument("--png", action="store_true",
-                               help="Convert extracted TLG files to PNG using tlg2png")
+                               help="Convert extracted TLG files to PNG; embedded PNG files are kept as-is")
     p_extract_all.add_argument("--tlg2png",
                                help="Path to tlg2png.exe (default: tools/tlg2png/tlg2png.exe)")
 
