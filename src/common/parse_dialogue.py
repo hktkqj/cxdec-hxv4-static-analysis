@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sanoba Witch 对话文本解析器
+Kirikiri/KAG 对话文本解析器
 解析 Kirikiri (KAG) 引擎的编译后 JSON 脚本，提取角色对话文本（多语言）。
 
 输入: 包含 .ks.json 文件的目录
@@ -289,7 +289,7 @@ def print_statistics(entries: list[DialogueEntry]) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="解析 Sanoba Witch .ks.json 文件中的角色对话文本")
+        description="解析 Kirikiri/KAG .ks.json 文件中的角色对话文本")
     parser.add_argument(
         "input_dir", nargs="?", default=".",
         help="包含 .ks.json 文件的目录（默认: 当前目录）")

@@ -22,11 +22,11 @@ pip install pycryptodome pillow
 设置变量。不同游戏通常只需要改 `$game` 和 `$exeName`：
 
 ```powershell
-$repo = "F:\SteamLibrary\steamapps\common\sanobawitchi_xp3analysis"
+$repo = "F:\Projects\xp3analysis"
 Set-Location $repo
 
-$game = "G:\Galgames\枯れない世界と終わる花"
-$exeName = "sweet_01kareseka.exe"
+$game = "D:\Games\TargetGame"
+$exeName = "TargetGame.exe"
 $exe = Join-Path $game $exeName
 
 $work = Join-Path $repo "Temp\static_recover_current"
@@ -422,28 +422,25 @@ python tools\cglist_diff_map.py `
 
 ---
 
-## 8. `枯れない世界と終わる花` 参考值
+## 8. 样例值记录
 
-当前已确认的示例值：
+以下字段会随目标游戏和版本变化。记录它们的目的只是方便复核当前样本，不应硬编码到工具或通用文档中：
 
 ```text
-startup_key        = ryup2edvnxgdk4pf9hjqqnegt6
-bootstrap_key      = nwaqa3kd38e5hdywszzy7y64ha
-bootstrap_prefix   = SWEETandTEA_AllRightsReserved.
-archive_unique_key = {Haru@Kotose@Yukina@Ren}
-archive seed       = ceeaaf2cefbeadde
+startup_key        = <startup bres path key>
+bootstrap_key      = <bootstrap bres path key>
+bootstrap_prefix   = <prefix from _bootStrap(...)>
+archive_unique_key = <UNIQUE string from BOOTSTRAP DLL>
+archive seed       = <resolved archive seed>
 ```
 
-已确认包名包括：
+可以同时记录已确认的小范围验证包名，例如：
 
 ```text
-adult.xp3
-censored.xp3
+main.xp3
+scn.xp3
 data.xp3
 evimage.xp3
-fgimage.xp3
-video.xp3
-voice.xp3
 ```
 
 这些值是样例，不应硬编码到工具或新游戏文档中。

@@ -8,7 +8,7 @@ flowchart TD
     B --> B3["TEXT/127<br/>UTF-16LE 文本<br/>形如 bres://./{startup_path_key}/"]
     B --> B4["可选 RCDATA/PLUGIN<br/>仅保存为诊断中间产物<br/>不参与主解密链路"]
 
-    A --> C["读取 0x2000 字节 bres salt<br/>默认：PE RVA 0x2E4A00<br/>可覆盖：--salt-file / --salt-file-offset / --salt-rva"]
+    A --> C["读取 0x2000 字节 bres salt<br/>默认：从 EXE 自动检测并校验<br/>可覆盖：--salt-file / --salt-file-offset / --salt-rva"]
     B3 --> D["解析 STARTUP.TJS path key<br/>去掉 bres://./ 前缀和尾部 /<br/>得到 startup_key"]
     B1 --> E["解密 STARTUP.TJS<br/>key material = startup_key.encode(UTF-16LE) + salt<br/>digest = SHA3-384(key material)<br/>cipher = ChaCha8 stream"]
     C --> E
@@ -59,7 +59,7 @@ flowchart TD
     Z --> Z2["查找 Hxv4 chunk descriptor<br/>字段：payload_offset、payload_size、flags<br/>flags bit0 = open_flag"]
 
     Z2 --> AA["按 payload_offset / payload_size<br/>从 XP3 文件读取 Hxv4 encrypted payload<br/>格式：16 字节 Poly1305 tag + ciphertext"]
-    T1 --> AB["解密 Hxv4 payload<br/>XChaCha20-Poly1305<br/>key = hxv4_key<br/>nonce = hxv4_nonce[flags*& 1]"]
+    T1 --> AB["解密 Hxv4 payload<br/>XChaCha20-Poly1305<br/>key = hxv4_key<br/>nonce = hxv4_nonce[flags & 1]"]
     T2 --> AB
     Z2 --> AB
     AA --> AB
@@ -110,6 +110,22 @@ flowchart TD
     AX -- "否" --> AX1["失败或未还原<br/>检查 drip_program 是否匹配目标 EXE/DLL<br/>检查 open_flag、Hxv4 映射、salt、BOOTSTRAP prefix"]
     AX -- "是" --> AY["写出最终资源文件<br/>文件内容已通过 XP3 adlr 校验"]
 ```
+
+## Hxv4 细节文档索引
+
+Mermaid 图展示的是端到端主链路；各加密子层的详细说明已拆分到以下文档：
+
+| 主题 | 文档 |
+|------|------|
+| Hxv4 chunk、descriptor、payload 解密和 record 映射 | [docs/core/hxv4/01-hxv4-table.md](docs/core/hxv4/01-hxv4-table.md) |
+| BOOTSTRAP 初始化、FilterManager KDF 和 key/nonce 派生 | [docs/core/hxv4/02-bootstrap-kdf.md](docs/core/hxv4/02-bootstrap-kdf.md) |
+| `domain_hash` / `file_hash` 与资源路径匹配 | [docs/core/hxv4/03-resource-hash.md](docs/core/hxv4/03-resource-hash.md) |
+| DripValue VM、lane 和 opcode 语义 | [docs/core/hxv4/04-dripvalue-vm.md](docs/core/hxv4/04-dripvalue-vm.md) |
+| `record.key` 到 48-byte filter seed state 的派生 | [docs/core/hxv4/05-filter-state.md](docs/core/hxv4/05-filter-state.md) |
+| FilterImpl / Stream XOR 四层变换 | [docs/core/hxv4/06-stream-filter.md](docs/core/hxv4/06-stream-filter.md) |
+| FilterManager 运行时状态和 `drip_program.json` 字段对应 | [docs/core/hxv4/07-filter-manager-runtime.md](docs/core/hxv4/07-filter-manager-runtime.md) |
+| 运行时 stream read 调用链 | [docs/core/hxv4/08-runtime-read-path.md](docs/core/hxv4/08-runtime-read-path.md) |
+| 样本 key/nonce 常量和验证结果 | [docs/core/hxv4/09-sample-constants.md](docs/core/hxv4/09-sample-constants.md)、[docs/core/hxv4/10-validation-results.md](docs/core/hxv4/10-validation-results.md) |
 
 ## 关键阶段说明
 

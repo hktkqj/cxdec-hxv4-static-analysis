@@ -1,6 +1,6 @@
 # XP3 格式解析文档
 
-本文档详细描述 `SabbatOfTheWitch` 使用的 XP3 容器格式，包括标准结构与游戏自定义变体。
+本文档描述目标样本使用的 XP3 容器格式，包括标准结构与样本自定义变体。
 
 ---
 
@@ -35,7 +35,7 @@ Offset  Size  Field
 
 ### 2.2 游戏自定义变体
 
-本游戏修改了 index offset 存储方式：
+目标样本修改了 index offset 存储方式：
 
 ```
 Offset  Size  Field
@@ -138,7 +138,7 @@ iter_entry_chunks():
 
 ### 3.3 自定义顶层 Chunk：Hxv4
 
-除标准 chunk 外，本游戏在每个 XP3 的 index 中嵌入了一个 `Hxv4` 自定义 chunk：
+除标准 chunk 外，目标样本在每个 XP3 的 index 中嵌入了一个 `Hxv4` 自定义 chunk：
 
 ```
 Hxv4 descriptor (14 bytes):
@@ -266,11 +266,11 @@ XP3 文件 (raw bytes)
 
 ## 附录 A — 脱壳流程
 
-本游戏使用 `.bind` 段自加密保护主程序代码。
+目标样本使用 `.bind` 段自加密保护主程序代码。
 
 ### A.1 手动脱壳步骤（x32dbg）
 
-1. 使用 **x32dbg**（32-bit 版本）打开 `SabbatOfTheWitch.exe`
+1. 使用 **x32dbg**（32-bit 版本）打开目标游戏 EXE
 2. 在 `0x8E433B` 设断点 — `bind_unpack_loader` 返回后，EAX 包含计算后的 OEP
 3. 确认 `EAX == 0x00639653`（预期 OEP）
 4. 运行到 `0x8E4346`，单步一次进入解包后的入口

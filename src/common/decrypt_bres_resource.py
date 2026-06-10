@@ -1,7 +1,7 @@
 """
 decrypt_bres_resource.py
 ========================
-离线解密 SabbatOfTheWitch（sanoba witch）PE 资源中的
+离线解密目标游戏 PE 资源中的
 bres:// 加密资源（BOOTSTRAP / STARTUP.TJS / PLUGIN）。
 
 算法还原（基于 IDA Pro 逆向）
@@ -179,7 +179,7 @@ def main():
         salt = f.read()
     assert len(salt) == 0x2000, f"salt 长度应为 8192，实际 {len(salt)}"
 
-    PATH_KEY = '9kpzeqme93usra66re54h69ymi'
+    PATH_KEY = os.environ.get('BRES_PATH_KEY', '<startup bres path key>')
 
     # ── 模式1：从命令行传入密文文件 ──────────────────────────────────────────
     if len(sys.argv) >= 3 and sys.argv[1] == '--file':
@@ -205,8 +205,8 @@ def main():
 
     # ── 模式2：从 exe 提取并解密所有 RCDATA ─────────────────────────────────
     exe_candidates = [
-        r'F:\SteamLibrary\steamapps\common\SabbatOfTheWitch\SabbatOfTheWitch.exe',
-        os.path.join(base, 'SabbatOfTheWitch.exe'),
+        os.environ.get('TARGET_GAME_EXE', ''),
+        os.path.join(base, 'TargetGame.exe'),
     ]
     exe_path = None
     for p in exe_candidates:
@@ -215,7 +215,7 @@ def main():
             break
 
     if exe_path is None:
-        print("[!] 找不到 SabbatOfTheWitch.exe，请用 --file 模式手动指定密文文件。")
+        print("[!] 找不到目标游戏 EXE，请用 --file 模式手动指定密文文件，或设置 TARGET_GAME_EXE。")
         print(f"    用法: python {sys.argv[0]} --file <密文.bin> [输出文件]")
         sys.exit(1)
 

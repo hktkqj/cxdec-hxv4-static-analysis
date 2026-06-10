@@ -15,7 +15,7 @@ dotnet build tools\FilterManagerDerive\FilterManagerDerive.csproj -p:PlatformTar
   --dll 9bd81f525ace.dll `
   --out data\9bd81f525ace.drip_program.json `
   --bootstrap-text "<final System.bootStrap string>" `
-  --archive-text "{Kanna+Natsume+Nozomi+Mei+Suzune}"
+  --archive-text "<UNIQUE string from BOOTSTRAP DLL>"
 ```
 
 If `--bootstrap-text` is omitted, the tool uses `UNIQUE + WARNING` from the DLL
@@ -30,4 +30,3 @@ Useful options:
   string without hex encoding it manually.
 - `--archive-seed-hex`: override the 8-byte archive seed at RVA `0x81758`.
 - `--params-hex`: override the `PARAMS` table entry.
-

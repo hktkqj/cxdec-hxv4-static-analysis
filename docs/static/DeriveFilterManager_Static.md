@@ -13,10 +13,10 @@ python src\static_extract\static_xp3_recover.py --exe path\to\game.exe
 脚本输出：
 
 ```text
-data/static_recover/sanoba.static.drip_program.json
+data/static_recover/drip_program.json
 ```
 
-该 JSON 已确认与早期 `data/sanoba_complete.drip_program.json` 在关键解密材料上等价：
+该 JSON 应与运行时 dump 或已验证样本在关键解密材料上等价：
 
 ```text
 hxv4_key    = e4dc1d99d9d9fb1ae5f7529ee70f841bfadb13d12f4d22b99170d6cc6a62bc54
@@ -26,11 +26,12 @@ context_u32 = 3106 项完全一致
 lanes       = records 完全一致；VA 字段因离线进程加载地址不同而变化
 ```
 
-使用游戏目录下的 `scn.xp3` 验证通过：
+使用目标游戏目录下的代表性 XP3 验证：
 
 ```powershell
 python src\static_extract\static_xp3_recover.py `
-  --xp3 "F:\SteamLibrary\steamapps\common\sanoba witch\scn.xp3" `
+  --exe path\to\game.exe `
+  --xp3 path\to\scn.xp3 `
   --verify
 ```
 
@@ -40,13 +41,14 @@ python src\static_extract\static_xp3_recover.py `
 scn.xp3: checked=26 failed=0 unresolved_filter=0
 ```
 
-CafeStella 适配时使用目标目录下的 `temp` 保存中间文件，并只做小范围验证：
+适配新游戏时使用目标目录下的 `temp` 保存中间文件，并只做小范围验证：
 
 ```powershell
-$game = "F:\SteamLibrary\steamapps\common\CafeStella"
+$game = "D:\Games\TargetGame"
+$exeName = "TargetGame.exe"
 
 python src\static_extract\static_xp3_recover.py `
-  --exe "$game\CafeStella.exe" `
+  --exe "$game\$exeName" `
   --work-dir "$game\temp\static_recover" `
   --debug
 
@@ -70,7 +72,7 @@ data.xp3: checked=20 failed=0 unresolved_filter=0 limited_to=20
 
 当前静态闭环已经整理到 `src/static_extract/static_xp3_recover.py` 中。它的目标是从原始游戏 EXE 和加密模块自身恢复完整 `drip_program.json`，不依赖运行时 dump、调试器附加或临时 DLL 抓取。
 
-不同游戏适配的操作清单见 [Cross-Game Static Flow Adaptation](Porting_Static_Flow.md)。该文档记录了 CafeStella 的已确认参数、有限验证策略、`--debug` / `--verify-max-entries` 用法，以及什么时候才需要转入 IDA。
+不同游戏适配的操作清单见 [Cross-Game Static Flow Adaptation](Porting_Static_Flow.md)。该文档记录了参数记录模板、有限验证策略、`--debug` / `--verify-max-entries` 用法，以及什么时候才需要转入 IDA。
 
 ### 1. 静态输入
 
@@ -304,7 +306,7 @@ hxv4_nonce1 = b96f89630850dd23a13810c7718ad003936d1d4a3ae00890
 python src\common\xp3_inspect.py verify `
   --filter recovered `
   --drip-program data\static_recover\drip_program.json `
-  "F:\SteamLibrary\steamapps\common\sanoba witch\scn.xp3"
+  path\to\scn.xp3
 ```
 
 验证结果：
@@ -319,7 +321,7 @@ scn.xp3: checked=26 failed=0 unresolved_filter=0
 python src\common\xp3_inspect.py extract-all out\scn `
   --filter recovered `
   --drip-program data\static_recover\drip_program.json `
-  "F:\SteamLibrary\steamapps\common\sanoba witch\scn.xp3"
+  path\to\scn.xp3
 ```
 
 关于如何利用`drip_program.json`对文件进行解密的详细流程，请参考 [XP3 容器结构解析](../core/XP3Extract.md) 和 [Hxv4 / DripValue / FilterRuntimeState 分析](../core/Hxv4Ripped.md)。

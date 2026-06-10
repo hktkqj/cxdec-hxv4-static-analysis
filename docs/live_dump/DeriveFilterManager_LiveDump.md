@@ -28,13 +28,13 @@ LiveDump 流程适用于以下情况：
 4. 用 archive unique key 调用 `sub_100157D0`。
 5. 导出 `hxv4_key`、`hxv4_nonce0`、`hxv4_nonce1`、`holder_words`、`context_u32`、`lanes`。
 
-Sanoba 对应 DLL：
+已验证样本对应 DLL：
 
 ```text
 1ae7153ed25d.dll
 ```
 
-Sanoba 对应 UNIQUE：
+已验证样本对应 UNIQUE：
 
 ```text
 {NENeMEGURuTSUMUGiTOUKoWAKANa}
@@ -81,14 +81,14 @@ breakpoint_rva
 
 ```powershell
 python src\dynamic_capture\capture_bootstrap_args.py `
-  --exe "F:\SteamLibrary\steamapps\common\sanoba witch\SabbatOfTheWitch.exe" `
+  --exe "D:\Games\TargetGame\TargetGame.exe" `
   --out data\bootstrap_capture.json
 ```
 
 如果游戏已正常启动，可手动附加：
 
 ```powershell
-Get-Process -Name SabbatOfTheWitch | Select-Object Id
+Get-Process -Name TargetGame | Select-Object Id
 
 python src\dynamic_capture\capture_bootstrap_args.py `
   --pid <PID> `
@@ -122,7 +122,7 @@ context_u32 大量不一致
 
 1. 从 `manager_ready.drip_program.json` 保留 live dump 的 `context_u32` 和 `lanes`。
 2. 补入已确认的 Hxv4 参数。
-3. 输出 `data/sanoba_complete.drip_program.json`。
+3. 输出 `data/target_complete.drip_program.json`。
 
 Hxv4 参数：
 
@@ -137,7 +137,7 @@ hxv4_nonce1 = b96f89630850dd23a13810c7718ad003936d1d4a3ae00890
 ```powershell
 python src\common\xp3_inspect.py verify sample\scn.xp3 `
   --filter recovered `
-  --drip-program data\sanoba_complete.drip_program.json `
+  --drip-program data\target_complete.drip_program.json `
   --verbose
 ```
 
@@ -154,11 +154,11 @@ scn.xp3: checked=26 failed=0 unresolved_filter=0
 | bootstrap 字符串 | 运行时抓参或 dump 反推 |
 | context | 来自运行时 `manager_ready.drip_program.json` |
 | DLL | 可来自运行时临时 DLL、dump 或手工 BOOTSTRAP 解包 |
-| 主要输出 | `data/sanoba_complete.drip_program.json` |
+| 主要输出 | `data/target_complete.drip_program.json` |
 
 ## 当前状态
 
-LiveDump 流程仍可作为交叉验证路径保留，但不再是 Sanoba 当前样本的必要步骤。
+LiveDump 流程仍可作为交叉验证路径保留，但不再是当前静态流程的必要步骤。
 
 静态流程已经确认最终 bootstrap 字符串为：
 
@@ -167,4 +167,3 @@ Sabbat_of_the_Witch (C)YUZUSOFT/JUNOS INC. All Rights Reserved.Warning! Extracti
 ```
 
 因此 `context_u32` 可以由 `FilterManagerDerive` 离线正确派生，不再需要 live dump。
-

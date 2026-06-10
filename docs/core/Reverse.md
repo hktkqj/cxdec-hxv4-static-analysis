@@ -1,4 +1,4 @@
-# 逆向分析文档 — Sanoba Witch XP3 资源保护体系
+# 逆向分析文档 — XP3 资源保护体系
 
 本文档提供对本游戏 XP3 资源保护体系的完整逆向分析流程概述，并以链接形式指向详细文档的对应章节。
 
@@ -7,7 +7,7 @@
 ## 一、总体架构
 
 ```plain
-SabbatOfTheWitch.exe (TVP/Kirikiri 引擎)
+TargetGame.exe (TVP/Kirikiri 引擎)
   ├── .bind 段 → 运行时自解密脱壳 → OEP 0x639653
   ├── 主程序 TVP Storage 层 → XP3 Archive → Archive Stream
   ├── Plugin 系统 → 运行时加载随机 DLL（加密过滤层）
@@ -24,7 +24,7 @@ SabbatOfTheWitch.exe (TVP/Kirikiri 引擎)
 
 ### Step 1: 程序脱壳
 
-游戏主程序 `SabbatOfTheWitch.exe` 使用 `.bind` 段自加密。入口点 `0x8E4310` 调用 `bind_unpack_loader (0x8E4390)` 解密/装载真实 PE，重建导入表后跳转到 OEP `0x639653`。
+目标样本主程序使用 `.bind` 段自加密。入口点 `0x8E4310` 调用 `bind_unpack_loader (0x8E4390)` 解密/装载真实 PE，重建导入表后跳转到 OEP `0x639653`。
 
 > **详细文档**：见 [XP3Extract.md](XP3Extract.md#附录-a-—-脱壳流程) 附录 A
 

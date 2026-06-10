@@ -190,7 +190,7 @@ def iter_salt_assignment_candidates(image: PeImage) -> list[SaltCandidate]:
 def iter_packed_neighborhood_salt_candidates(image: PeImage) -> list[SaltCandidate]:
     """Find packed samples where the salt has no code xrefs in the original EXE.
 
-    Sanoba/CafeStella packed images keep the 0x2000-byte salt in .rdata near:
+    Known packed images in this encryption family keep the 0x2000-byte salt in .rdata near:
 
         UTF-16 "TEXT", UTF-16 "yes", ASCII "forcedataxp3", UTF-16 "no"
 

@@ -24,7 +24,8 @@
 所有新游戏的中间文件建议放在目标游戏目录下的 `temp` 子目录，避免污染分析仓库：
 
 ```powershell
-$game = "F:\SteamLibrary\steamapps\common\CafeStella"
+$game = "D:\Games\TargetGame"
+$exeName = "TargetGame.exe"
 New-Item -ItemType Directory -Force "$game\temp" | Out-Null
 ```
 
@@ -34,7 +35,7 @@ New-Item -ItemType Directory -Force "$game\temp" | Out-Null
 
 ```powershell
 python src\static_extract\static_xp3_recover.py `
-  --exe "$game\CafeStella.exe" `
+  --exe "$game\$exeName" `
   --work-dir "$game\temp\static_recover_probe" `
   --skip-derive `
   --debug
@@ -49,11 +50,11 @@ python src\static_extract\static_xp3_recover.py `
 [debug] BOOTSTRAP decrypted bytes=327658 dll_bytes=763392
 [debug] bootstrap_prefix source=STARTUP.TJS decompiled _bootStrap call
 [debug] DLL config labels=PARAMS,PUBKEY,UNIQUE,WARNING
-startup_key: xfgp9i53ygpktxjfjyzcjf5hg2
-bootstrap_key: daagz6fftpcf5ayewqa7246z6w
-salt_source: F:\SteamLibrary\steamapps\common\CafeStella\CafeStella.exe:auto V2Link-before anchor RVA ... salt VA ... / RVA ... / file offset ...
-bootstrap_prefix: Cafe Stella and the Reapers Butterflies (C)YUZUSOFT/JUNOS INC. All Rights Reserved.
-archive_unique_key: {Kanna+Natsume+Nozomi+Mei+Suzune}
+startup_key: <startup bres path key>
+bootstrap_key: <bootstrap bres path key>
+salt_source: D:\Games\TargetGame\TargetGame.exe:auto ... RVA ... / file offset ...
+bootstrap_prefix: <prefix from STARTUP.TJS _bootStrap(...)>
+archive_unique_key: <UNIQUE string from BOOTSTRAP DLL>
 ```
 
 如果 `STARTUP.TJS did not decrypt to TJS2100`，优先检查自动定位输出、`--salt-rva` / `--salt-file-offset` / `--salt-file`。如果 prefix 可疑，检查 `work-dir\STARTUP.TJS` 中反编译出的 `_bootStrap("...")`；反编译不可用时脚本会回退到常量池中包含 `all` 的字符串。如果 DLL 配置表缺少 `UNIQUE` 或 `WARNING`，优先检查 `--table-rva`。
@@ -64,7 +65,7 @@ archive_unique_key: {Kanna+Natsume+Nozomi+Mei+Suzune}
 
 ```powershell
 python src\static_extract\static_xp3_recover.py `
-  --exe "$game\CafeStella.exe" `
+  --exe "$game\$exeName" `
   --work-dir "$game\temp\static_recover" `
   --debug
 ```
@@ -106,7 +107,7 @@ data.xp3: checked=20 failed=0 unresolved_filter=0 limited_to=20
 
 ```powershell
 python src\static_extract\static_xp3_recover.py `
-  --exe "$game\CafeStella.exe" `
+  --exe "$game\$exeName" `
   --work-dir "$game\temp\static_recover" `
   --xp3 "$game\main.xp3" "$game\scn.xp3" `
   --verify `
@@ -128,7 +129,7 @@ python src\common\xp3_inspect.py hxv4 "$game\main.xp3" `
 
 ### 6. 按包提取
 
-确认小范围验证通过后，再提取目标包。例如提取 CafeStella 的 `evimage.xp3`：
+确认小范围验证通过后，再提取目标包。例如提取 `evimage.xp3`：
 
 ```powershell
 python src\common\xp3_inspect.py extract-all `
@@ -142,15 +143,15 @@ python src\common\xp3_inspect.py extract-all `
 
 ```text
 processed=528 written=528 unresolved_filter=0 failed=0
-manifest=F:\SteamLibrary\steamapps\common\CafeStella\temp\evimage_extract\manifest.jsonl
+manifest=D:\Games\TargetGame\temp\evimage_extract\manifest.jsonl
 ```
 
-## CafeStella 已确认参数
+## 样本参数记录模板
 
 | 项目 | 值 |
 |------|----|
-| 游戏目录 | `F:\SteamLibrary\steamapps\common\CafeStella` |
-| 主程序 | `CafeStella.exe` |
+| 游戏目录 | `D:\Games\TargetGame` |
+| 主程序 | `TargetGame.exe` |
 | salt source | 自动定位；packed 原始 EXE 通常通过 `V2Link-before` / `forcedataxp3-near` 数据邻域命中 |
 | DLL 配置表 RVA | `0x80E38` |
 | STARTUP key | `xfgp9i53ygpktxjfjyzcjf5hg2` |

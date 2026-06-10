@@ -161,7 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--pid", type=int)
-    target.add_argument("--name", help="exact process image name, e.g. SabbatOfTheWitch.exe")
+    target.add_argument("--name", help="exact process image name, e.g. TargetGame.exe")
     parser.add_argument("output", type=Path)
     return parser
 

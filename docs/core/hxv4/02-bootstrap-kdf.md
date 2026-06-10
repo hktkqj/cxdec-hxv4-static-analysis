@@ -246,7 +246,7 @@ char __thiscall sub_10010550(
     // Keccak-f[1600] 排列（24 轮 Theta/Rho/Pi/Chi/Iota）
     sub_10015AB0(a6, a7);
     //   参数: a6 = PARAMS 指针, a7 = 22（PARAMS 长度）
-    //   PARAMS 内容 (Sanoba):
+    //   PARAMS 内容（已验证样本）:
     //     04 06 02 00 07 01 03 05  03 00 05 04 02 01 01 02  00 80 26 02 C8 01
     //     └─── 置换表前 8B ────┘  └─── 置换表后 8B ────┘  └附加┘└─u16─┘└─u16─┘
 
@@ -442,7 +442,7 @@ int __thiscall FilterManager_UpdateGlobalKeyFromArchiveName(
 - 参数为空时，函数使用局部默认 seed。默认 seed 的两个 dword 是 `0x2CAFEACE` 和 `0xDEADBEEF`，按小端字节序为 `ce ea af 2c ef be ad de`。
 - 当前静态工具不模拟完整 TJS runtime callback，而是直接调用底层 DLL 函数；因此 `FilterManagerDerive` 的自动策略是：`--archive-seed-hex` 显式值优先；否则读取 DLL RVA `0x81758` 的 8 字节静态 seed；如果该位置全 0，则扫描 `sub_100157D0` 函数体恢复上述默认 seed 常量。
 
-已验证样本中，Limelight 使用非零静态 seed `bf22368a48210206`；`枯れない世界と終わる花` 的 RVA `0x81758` 为全 0，因此应走默认 seed `ceeaaf2cefbeadde`。这也是 `nonce0` 是否能正确解密主包的关键差异。
+已验证样本中，有的 BOOTSTRAP DLL 使用非零静态 seed；有的样本在 RVA `0x81758` 为全 0，因此应走默认 seed `ceeaaf2cefbeadde`。这也是 `nonce0` 是否能正确解密主包的关键差异。
 
 ### 2.6 sub_100148B0 — System.bootStrap 返回 Octet
 

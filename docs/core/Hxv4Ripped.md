@@ -35,7 +35,7 @@ XP3 index
 | 48-byte seed state 如何驱动实际 stream XOR | [hxv4/06-stream-filter.md](hxv4/06-stream-filter.md) |
 | FilterManager 运行时对象和 `drip_program.json` 字段如何对应 | [hxv4/07-filter-manager-runtime.md](hxv4/07-filter-manager-runtime.md) |
 | 运行时 stream read 调用链如何挂载 filter | [hxv4/08-runtime-read-path.md](hxv4/08-runtime-read-path.md) |
-| Sanoba 样本中的 key/nonce 常量 | [hxv4/09-sample-constants.md](hxv4/09-sample-constants.md) |
+| 已验证样本中的 key/nonce 常量 | [hxv4/09-sample-constants.md](hxv4/09-sample-constants.md) |
 | 全包验证结果 | [hxv4/10-validation-results.md](hxv4/10-validation-results.md) |
 
 ## 相关主线文档

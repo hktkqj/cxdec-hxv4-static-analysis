@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch/attach to SabbatOfTheWitch and dump when the random plugin manager is ready.
+"""Launch/attach to the target game and dump when the random plugin manager is ready.
 
 The game loads a protected TVP plugin from a random path like:
 
