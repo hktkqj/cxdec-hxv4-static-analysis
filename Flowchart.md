@@ -20,7 +20,7 @@ flowchart TD
 
     G --> H["查找 BOOTSTRAP URL<br/>字符串满足 bres://./.../bootstrap"]
     H --> I["提取 BOOTSTRAP path key<br/>取 URL 中 bres://./ 后第一段"]
-    G1 --> J["查找 System.bootStrap prefix<br/>优先解析源码 _bootStrap(\"...\") 第一参数<br/>失败时回退到常量池中包含 all 的字符串"]
+    G1 --> J["查找 System.bootStrap prefix<br/>优先解析源码 _bootStrap(&quot;...&quot;) 第一参数<br/>失败时回退到常量池中包含 all 的字符串"]
     G --> J
 
     B2 --> K["解密 BOOTSTRAP<br/>算法同 bres：SHA3-384(path_key_utf16le + salt) + ChaCha8<br/>path_key = bootstrap_key"]
