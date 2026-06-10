@@ -364,13 +364,13 @@ this.askYesNo = askYesNo incontextof this;
 
 ## Validation / 测试
 
-This decompiler has been verified to cover all bytecode patterns the compiler can generate, and validated against all TJS2 scripts in the following directories:  
+This decompiler has been verified to cover all bytecode patterns the compiler can generate, and validated against all TJS2 scripts in the following directories:<br>
 已验证涵盖所有TJS2编译器可生成的字节码模式，并已对以下目录中的所有TJS2脚本完成验证测试：
 
 - [x] [kag3/system](https://github.com/krkrz/kag3/tree/master/data/system)
 - [x] [Krkr2Compat](https://github.com/krkrz/Krkr2Compat)
-- [x] [KAGEX3/system](https://github.com/krkrz/krkr2/tree/master/kirikiri2/branches/kag3ex3/template/system) 
+- [x] [KAGEX3/system](https://github.com/krkrz/krkr2/tree/master/kirikiri2/branches/kag3ex3/template/system)
 - [x] All script files of a complete game / 一部游戏的全部脚本资源
 
-The complete game has been runtime-verified to launch and run correctly using only decompiled scripts.  
+The complete game has been runtime-verified to launch and run correctly using only decompiled scripts.<br>
 游戏测试项目已通过运行时验证，仅使用反编译脚本即可正常启动并运行。

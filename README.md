@@ -1,245 +1,191 @@
-# bres/BOOTSTRAP/Hxv4 XP3 资源静态提取分析
+# bres / BOOTSTRAP / Hxv4 XP3 资源静态提取分析
 
-本仓库存储 **Sabbat of the Witch for Steam** 以及使用 *类似加密* 的 XP3 资源保护分析文档与提取工具；当前静态脚本已整理为面向同一类 bres/BOOTSTRAP/Hxv4 加密的恢复流程。
+本仓库存放 Kirikiri / XP3 游戏中一类 `bres://`、`BOOTSTRAP`、`Hxv4`、FilterManager 加密链路的分析文档和提取工具。当前推荐路线是纯静态恢复：不启动游戏、不附加调试器，直接从目标 EXE、PE Resources 和 XP3 包恢复 `drip_program.json`，再用它验证或提取资源。
 
-当前项目保留两条路线：
+动态 dump / 运行时抓取脚本仍保留在仓库中，主要用于对照旧流程或处理静态流程尚未覆盖的新样本；日常使用优先看静态流程。
 
-| 路线 | 状态 | 用途 |
-| ------ | ------ | ------ |
-| 纯静态分析与提取 | 当前推荐 | 不启动游戏、不附加调试器，直接从原始 EXE 和 XP3 文件恢复解密状态 |
-| 动态 dump / 运行时抓取 | 已弃用 | 通过运行时 dump 或断点抓参取得 FilterManager 状态 |
+已测试程序包括：`**的夜宴（Steam ver.）`，`****随想曲`，`*******与终结之花`，`*******妹妹的乡间生活（Steam ver.）`。如果在其他程序中出现问题，欢迎提交 issue 并向我提供样本进行适配。
 
-满足相同加密密钥（或者说同一款游戏）的样本可以走纯静态流程得到可用的 `drip_program.json`，不再需要运行时 dump。该流程已用于 Sanoba Witch 和 CafeStella 静态适配；不同游戏通常只需要确认 EXE 路径、salt 位置、DLL 配置表 RVA 和小范围 XP3 验证结果。
+## TL;DR
 
-## 纯静态分析与提取
+| 目标 | 入口 |
+|------|------|
+| 从零跑通静态恢复、验证、提取和后处理 | [docs/usage/TryItOut.md](docs/usage/TryItOut.md) |
+| 看完整数据流和关键状态传递 | [Flowchart.md](Flowchart.md) |
+| 理解纯静态 FilterManager 派生 | [docs/static/DeriveFilterManager_Static.md](docs/static/DeriveFilterManager_Static.md) |
+| 适配另一款同类加密游戏 | [docs/static/Porting_Static_Flow.md](docs/static/Porting_Static_Flow.md) |
+| 理解 Hxv4 / DripValue / FilterRuntimeState | [docs/core/Hxv4Ripped.md](docs/core/Hxv4Ripped.md) |
+| 理解 XP3 容器和提取边界 | [docs/core/XP3Extract.md](docs/core/XP3Extract.md) |
+| 处理 PSB/PIMG CG 合成 | [docs/usage/TryItOut.md#7-psbpimg-和-cg-合成工具](docs/usage/TryItOut.md#7-psbpimg-和-cg-合成工具) |
 
-完整数据流请首先参考 [Flowchart](./Flowchart.md)。
+## 当前推荐流程
 
-静态流程入口：
-
-```powershell
-python src\static_extract\static_xp3_recover.py --exe path\to\game.exe
-```
-
-该流程完成的工作：
-
-1. 从目标 EXE 的 PE Resources 提取 `STARTUP.TJS`、`BOOTSTRAP`、可选 `PLUGIN` 和 `TEXT/127`。
-2. 默认先扫描目标 EXE 汇编中的 `salt_ptr` / `0x2000` 初始化赋值；若原始 packed EXE 没有可见 xref，则回退到 `forcedataxp3` / `TEXT` / `V2Link` 数据邻域定位 0x2000 字节 bres salt，并用 `STARTUP.TJS -> TJS2100\0` 校验；也可显式传 `--salt-rva` / `--salt-file` / `--salt-file-offset`。
-3. 用 `SHA3-384(path_key_utf16le + salt) + ChaCha8` 解密 bres:// 资源。
-4. 解析 `STARTUP.TJS` 的 TJS2 常量池取得 BOOTSTRAP URL，并用 `tools/tjs2-decompiler` 反编译源码后优先从 `_bootStrap("...")` 提取脚本级 prefix；反编译不可用时回退到常量池中包含 `all` 的候选字符串。
-5. 解密 `BOOTSTRAP`，跳过 8 字节 header 后 zlib 解压出随机加密 DLL。
-6. 读取 DLL 配置表中的 `UNIQUE` 和 `WARNING`。
-7. 按 DLL 内 `System_bootStrap_callback` 的真实逻辑拼出最终 bootstrap 字符串。
-8. 调用 `FilterManagerDerive` 离线加载 DLL，执行内部派生函数，并由工具自动解析 archive seed：`--archive-seed-hex` 优先，否则使用 DLL RVA `0x81758` 的非零静态 seed，若为全 0 则使用 `FilterManager_ArchiveUpdate` 内嵌默认 seed。
-9. 使用该 JSON 验证或提取 XP3。
-
-验证 `scn.xp3`：
 
 ```powershell
 python src\static_extract\static_xp3_recover.py `
-  --exe "F:\SteamLibrary\steamapps\common\sanoba witch\SabbatOfTheWitch.exe" `
-  --xp3 "F:\SteamLibrary\steamapps\common\sanoba witch\scn.xp3" `
-  --verify
-```
-
-已验证结果：
-
-```text
-scn.xp3: checked=26 failed=0 unresolved_filter=0
-hxv4_key    = e4dc1d99d9d9fb1ae5f7529ee70f841bfadb13d12f4d22b99170d6cc6a62bc54
-hxv4_nonce0 = d99230e02623f4a0c4f2857682b4de6dfefe820b57060e50
-hxv4_nonce1 = b96f89630850dd23a13810c7718ad003936d1d4a3ae00890
-```
-
-适配其他游戏时，建议把所有中间产物写到目标游戏目录的 `temp` 下，并先做有限验证：
-
-```powershell
-$game = "F:\SteamLibrary\steamapps\common\CafeStella"
-
-python src\static_extract\static_xp3_recover.py `
-  --exe "$game\CafeStella.exe" `
-  --work-dir "$game\temp\static_recover" `
+  --exe path\to\game.exe `
+  --work-dir Temp\static_recover `
   --debug
 
 python src\common\xp3_inspect.py verify `
-  "$game\main.xp3" "$game\scn.xp3" "$game\data.xp3" `
+  path\to\main.xp3 path\to\scn.xp3 `
   --filter recovered `
-  --drip-program "$game\temp\static_recover\drip_program.json" `
-  --max-entries 20 `
-  --verbose
+  --drip-program Temp\static_recover\drip_program.json `
+  --max-entries 20
+
+python src\common\xp3_inspect.py extract-all `
+  Temp\xp3_extract `
+  path\to\scn.xp3 `
+  --filter recovered `
+  --drip-program Temp\static_recover\drip_program.json
 ```
 
-详细文档：
+`static_xp3_recover.py` 会完成：
 
-- [纯静态 FilterManager 派生流程](docs/static/DeriveFilterManager_Static.md)
-- [不同游戏的静态流程适配](docs/static/Porting_Static_Flow.md)
-- [XP3 容器结构解析](docs/core/XP3Extract.md)
-- [Hxv4 / DripValue / FilterRuntimeState 分析](docs/core/Hxv4Ripped.md)
+1. 从目标 EXE 的 PE Resources 读取 `STARTUP.TJS`、`BOOTSTRAP`、可选 `PLUGIN` 和 `TEXT/127`。
+2. 自动定位或读取 8192 字节 bres salt，并用 `STARTUP.TJS -> TJS2100\0` 校验。
+3. 用 `SHA3-384(path_key_utf16le + salt) + ChaCha8` 解密 bres 资源。
+4. 反编译或检查 `STARTUP.TJS`，提取 `_bootStrap("...")` 的脚本级 prefix。
+5. 解密 `BOOTSTRAP`，跳过默认 8 字节头后 zlib 解压出随机 DLL。
+6. 读取 DLL 配置表中的 `UNIQUE`、`WARNING` 等配置。
+7. 调用 `tools\FilterManagerDerive` 离线派生 FilterManager/DripValue 状态。
+8. 写出 `drip_program.json`，并可透传 `--verify` 或 `--extract-output` 直接验证/提取 XP3。
 
-## 动态 Dump / 运行时抓取 [Deprecated]
+适配新样本时建议先做有限验证，不要直接对所有包做全量验证：
 
-动态流程是早期路线，用于在最终 bootstrap 字符串尚未静态确认时，从运行时对象中获得正确状态。
-
-该流程完成的工作：
-
-1. 正常启动或附加游戏进程。
-2. 监控 `%TEMP%\krkr_...\<random>.dll` 随机插件加载。
-3. 在随机 DLL 的 `System_bootStrap_callback` 内部调用前后抓取参数，或等待 FilterManager 初始化完成后 dump 进程内存。
-4. 从 full-memory minidump 导出 `context_u32`、`lanes`、`holder_words`。
-5. 将 live dump 的 context 与已确认的 Hxv4 key/nonce 合并为 `data/sanoba_complete.drip_program.json`。
-6. 用 `src\common\xp3_inspect.py` 验证或提取 XP3。
-
-主要脚本：
-
-```text
-src/dynamic_capture/capture_bootstrap_args.py
-src/dynamic_capture/watch_random_plugin_dump.py
-src/dynamic_capture/inspect_manager_dump.py
-src/dynamic_capture/minidump_process.py
+```powershell
+python src\common\xp3_inspect.py verify `
+  path\to\main.xp3 path\to\scn.xp3 `
+  --filter recovered `
+  --drip-program Temp\static_recover\drip_program.json `
+  --max-entries 20
 ```
 
-详细文档：
+## 工具地图
 
-- [LiveDump 版 FilterManager 派生流程](docs/live_dump/DeriveFilterManager_LiveDump.md)
-- [从零复现操作记录](docs/usage/TryItOut.md)
-- [总体逆向分析流程](docs/core/Reverse.md)
-- [DLL 配置差异分析](docs/diff/DllDiff.md)
+| 工具 | 用途 | 典型命令 |
+|------|------|----------|
+| `src\static_extract\static_xp3_recover.py` | 静态恢复 bres 资源、BOOTSTRAP DLL 和 `drip_program.json` | `python src\static_extract\static_xp3_recover.py --exe game.exe --work-dir Temp\static_recover --debug` |
+| `src\static_extract\recover_bres_salt.py` | 单独定位、扫描或验证 bres salt | `python src\static_extract\recover_bres_salt.py --exe game.exe --scan --out bres_salt.bin` |
+| `src\static_extract\compute_resource_hash.py` | 计算 XP3 path/file hash，并可用 `manifest.jsonl` 精确查找输出文件和格式 | `python src\static_extract\compute_resource_hash.py --filename cglist.csv --manifest Temp\xp3_extract\manifest.jsonl` |
+| `src\common\xp3_inspect.py` | XP3 摘要、查找、Hxv4 解析、验证、单文件提取、整包提取 | `python src\common\xp3_inspect.py extract-all outdir file.xp3 --filter recovered --drip-program drip_program.json` |
+| `tools\scan_headers.py` | 对提取目录中的 `.bin` 做全量 magic/header 分类 | `python tools\scan_headers.py -i Temp\xp3_extract -o Temp\file_type_report.txt --layout flat` |
+| `tools\psb_parser.py` | 检查 PSB/PIMG、导出嵌入图片、合成 CG PNG | `python tools\psb_parser.py compose-all entry.bin -o Temp\output\entry` |
+| `tools\descramble_files.py` | 解扰 Kirikiri scrambled UTF-16LE 文本 | `python tools\descramble_files.py -i Temp\xp3_extract -o Temp\descrambled` |
+| `tools\cglist_diff_map.py` | 用 `imagediffmap.csv` 解析 `cglist.csv` 的基础图和差分标签 | `python tools\cglist_diff_map.py cglist.csv imagediffmap.csv --json` |
+| `src\common\tjs2_inspect.py` | 检查 `TJS2100` 字节码容器 | `python src\common\tjs2_inspect.py file.tjs` |
+| `src\common\parse_dialogue.py` | 从已转换的 `.ks.json` 中导出对话文本 | `python src\common\parse_dialogue.py input_dir -o out_dir -f all` |
+
+更完整的工具说明和参数组合见 [TryItOut 命令索引](docs/usage/TryItOut.md#10-命令索引)。
+
+## 文档结构
+
+```plain
+Flowchart.md                              # 当前静态流程总图
+docs/
+├── usage/
+│   └── TryItOut.md                       # 推荐操作手册和工具命令索引
+├── static/
+│   ├── DeriveFilterManager_Static.md     # 纯静态恢复闭环
+│   └── Porting_Static_Flow.md            # 跨游戏适配流程
+├── core/
+│   ├── Hxv4Ripped.md                     # Hxv4 / DripValue / FilterRuntimeState 总览
+│   ├── hxv4/                             # Hxv4 表、KDF、hash、VM、filter 拆分文档
+│   ├── XP3Extract.md                     # XP3 容器结构和提取行为
+│   ├── ResourcePathResolution.md         # 资源路径和哈希解析
+│   └── Reverse.md                        # 早期总体逆向记录
+├── live_dump/
+│   └── DeriveFilterManager_LiveDump.md   # 动态 dump 旧路线
+└── diff/
+    └── DllDiff.md                        # BOOTSTRAP DLL 配置差异
+```
+
+第三方工具说明：
+
+- [tools/tjs2-decompiler/README.md](tools/tjs2-decompiler/README.md)
+- [tools/tlg2png/README.md](tools/tlg2png/README.md)
+- [tools/FilterManagerDerive/README.md](tools/FilterManagerDerive/README.md)
 
 ## 代码结构
 
 ```plain
 src/
-├── static_extract/                 # 纯静态提取闭环
-│   ├── static_xp3_recover.py       # 静态恢复 bres 资源、DLL 和 drip_program.json
-│   ├── bres_bootstrap.py           # bres/BOOTSTRAP 派生共用逻辑
-│   └── recover_bres_salt.py        # 从原始 EXE 提取并校验 bres salt
+├── static_extract/
+│   ├── static_xp3_recover.py       # 当前推荐的静态恢复主入口
+│   ├── bres_bootstrap.py           # bres/BOOTSTRAP 解密和配置解析共用逻辑
+│   ├── recover_bres_salt.py        # bres salt 定位、扫描、校验
+│   └── compute_resource_hash.py    # path/file hash 和 manifest 精确查找
 │
-├── dynamic_capture/                # 动态 dump / 运行时抓取
-│   ├── capture_bootstrap_args.py   # 抓取 System.bootStrap 参数
-│   ├── watch_random_plugin_dump.py # 监控随机 DLL 并创建 dump
-│   ├── inspect_manager_dump.py     # 从 dump 导出 FilterManager 状态
-│   ├── filter_manager_dump.py      # FilterManager/Drip 状态导出逻辑
-│   ├── minidump_reader.py          # full-memory minidump 读取
-│   └── minidump_process.py         # 创建 full-memory minidump
+├── common/
+│   ├── xp3_inspect.py              # XP3 摘要、Hxv4、验证、提取
+│   ├── decrypt_bres_resource.py    # bres:// 解密旧辅助脚本
+│   ├── tjs2_inspect.py             # TJS2100 字节码检查
+│   ├── resource_hash.py            # XP3 资源哈希实现
+│   ├── pe_image.py                 # PE section/resource 读取
+│   └── parse_dialogue.py           # KAG/KS 对话导出
 │
-└── common/                         # 两条路线共用代码
-    ├── pe_image.py                 # PE section/resource 读取
-    ├── xp3_inspect.py              # XP3 验证 / 提取 / Hxv4 解析主入口
-    ├── decrypt_bres_resource.py    # bres:// SHA3-384 + ChaCha8 解密
-    ├── tjs2_inspect.py             # TJS2100 字节码检查
-    └── parse_dialogue.py           # KAG 对话解析
+└── dynamic_capture/                # 运行时 dump / 旧路线辅助工具
+    ├── capture_bootstrap_args.py
+    ├── watch_random_plugin_dump.py
+    ├── inspect_manager_dump.py
+    ├── filter_manager_dump.py
+    ├── minidump_reader.py
+    └── minidump_process.py
 
 tools/
-└── FilterManagerDerive/            # x86 .NET 离线派生 FilterManager 状态
-    ├── FilterManagerDerive.cs      # 派生逻辑实现
-    └── FilterManagerDerive.sln
+├── FilterManagerDerive/            # x86 .NET 离线派生 FilterManager 状态
+│   ├── Program.cs
+│   └── FilterManagerDerive.csproj
+├── tjs2-decompiler/                # TJS2 字节码反编译器
+├── tlg2png/                        # TLG -> PNG 转换器
+├── psb_parser.py                   # PSB/PIMG 检查、提取、合成
+├── scan_headers.py                 # 提取结果全量 header 分类
+├── descramble_files.py             # Kirikiri scrambled 文本解扰
+└── cglist_diff_map.py              # CG 列表和差分映射解析
 ```
 
-## 文档结构
+## 数据目录
 
 ```plain
-docs/
-├── static/
-│   ├── DeriveFilterManager_Static.md      # 当前推荐的纯静态闭环
-│   └── Porting_Static_Flow.md             # 不同游戏的静态流程适配
-├── live_dump/
-│   └── DeriveFilterManager_LiveDump.md    # 早期动态 dump 闭环
-├── core/
-│   ├── Reverse.md                         # 总体逆向分析流程
-│   ├── XP3Extract.md                      # XP3 容器格式
-│   └── Hxv4Ripped.md                      # Hxv4 / DripValue / FilterRuntimeState
-├── diff/
-│   └── DllDiff.md                         # 不同随机 DLL 配置差异
-└── usage/
-    └── TryItOut.md                        # 历史复现命令和实验记录
+data/
+├── static_recover/                 # 已记录的静态恢复样例输出
+└── live_dump/                      # 早期动态 dump 样例输出
+
+sample/                             # XP3/Hxv4/TJS2 局部样本
+Temp/                               # 推荐的本地实验输出目录，通常不作为源码资料引用
 ```
-
-## 常用命令
-
-生成静态 `drip_program.json`：
-
-```powershell
-python src\static_extract\static_xp3_recover.py --exe path\to\game.exe
-```
-
-显式指定 salt PE RVA：
-
-```powershell
-python src\static_extract\static_xp3_recover.py `
-  --exe path\to\game.exe `
-  --salt-rva 0x........
-```
-
-指定 salt 文件偏移：
-
-```powershell
-python src\static_extract\static_xp3_recover.py `
-  --exe path\to\game.exe `
-  --salt-file-offset 0x2E3200
-```
-
-单独恢复 bres salt：
-
-```powershell
-python src\static_extract\recover_bres_salt.py --exe path\to\game.exe --out bres_salt.bin
-```
-
-验证 XP3：
-
-```powershell
-python src\common\xp3_inspect.py verify `
-  --filter recovered `
-  --drip-program data\static_recover\drip_program.json `
-  "F:\SteamLibrary\steamapps\common\sanoba witch\scn.xp3"
-```
-
-有限验证 XP3：
-
-```powershell
-python src\common\xp3_inspect.py verify `
-  --filter recovered `
-  --drip-program data\static_recover\drip_program.json `
-  --max-entries 20 `
-  "F:\SteamLibrary\steamapps\common\CafeStella\main.xp3"
-```
-
-静态恢复时透传有限验证：
-
-```powershell
-python src\static_extract\static_xp3_recover.py `
-  --exe "F:\SteamLibrary\steamapps\common\CafeStella\CafeStella.exe" `
-  --work-dir "F:\SteamLibrary\steamapps\common\CafeStella\temp\static_recover" `
-  --xp3 "F:\SteamLibrary\steamapps\common\CafeStella\main.xp3" `
-  --verify `
-  --verify-max-entries 20 `
-  --debug
-```
-
-提取 XP3：
-
-```powershell
-python src\common\xp3_inspect.py extract-all out\scn `
-  --filter recovered `
-  --drip-program data\static_recover\drip_program.json `
-  "F:\SteamLibrary\steamapps\common\sanoba witch\scn.xp3"
-```
-
-`tools/tjs2-decompiler` 用于把提取出的 `TJS2100` 字节码还原为可读的 TJS2 源码。本仓库在该工具相关能力上感恩 [crate-1556/tjs2-decompiler](https://github.com/crate-1556/tjs2-decompiler) 项目。
 
 ## 环境要求
 
-- Python 3.9+
-  - PyCryptodome 用于 SipHash 和 BLAKE2s 实现
-  - Pillow 用于CG合成
-- PyCryptodome
-- .NET 8 x86 runtime / SDK，用于运行 `tools/FilterManagerDerive`
-- Windows 环境；纯静态分析不需要启动游戏，动态 dump 工具需要 Windows 调试和进程读取 API
+- Windows + PowerShell。
+- Python 3.9+。
+- `pycryptodome`，用于 bres / Hxv4 / FilterManager 相关加密原语。
+- Pillow，用于 `tools\psb_parser.py` 的 PNG 读取和 alpha 合成。
+- .NET 8 x86 runtime 或 SDK，用于运行 `tools\FilterManagerDerive`。
+- `tools\tlg2png\tlg2png.exe`，用于 TLG 图片转换。
+
+安装 Python 依赖：
+
+```powershell
+pip install pycryptodome pillow
+```
+
+## 动态 Dump / 运行时抓取
+
+动态路线已不再是默认用法。它适合在新样本静态流程失败时做对照，例如抓取 `System_bootStrap_callback` 参数、监控 `%TEMP%\krkr_...\<random>.dll`、或从 full-memory minidump 中恢复 FilterManager 状态。
+
+相关文档和脚本：
+
+- [docs/live_dump/DeriveFilterManager_LiveDump.md](docs/live_dump/DeriveFilterManager_LiveDump.md)
+- [docs/core/Reverse.md](docs/core/Reverse.md)
+- `src\dynamic_capture\capture_bootstrap_args.py`
+- `src\dynamic_capture\watch_random_plugin_dump.py`
+- `src\dynamic_capture\inspect_manager_dump.py`
 
 ## 第三方项目
 
-[crate-1556/tjs2-decompiler](https://github.com/crate-1556/tjs2-decompiler) 是面向 Kirikiri / 吉里吉里引擎的 TJS2（TJS2100）字节码反编译器，可将编译后的 TJS2 字节码转换为可读、可分析的 TJS2 源码，并支持单文件、目录批量、递归目录、反汇编和文件信息查看等用法。本仓库曾使用 `tools/tjs2-decompiler` 作为脚本逻辑分析辅助工具。
-
-[vn-tools/tlg2png](https://github.com/vn-tools/tlg2png) Converts TLG images to PNG. TLG images are used by games based on Kirikiri engine.
+- [crate-1556/tjs2-decompiler](https://github.com/crate-1556/tjs2-decompiler): Kirikiri / TJS2 字节码反编译器，本仓库在 `tools\tjs2-decompiler` 中保留辅助分析版本。
+- [vn-tools/tlg2png](https://github.com/vn-tools/tlg2png): TLG 图片到 PNG 的转换工具，本仓库在 `tools\tlg2png` 中保留 Windows 可执行文件。
 
 ## AI 辅助创作、分析声明
 

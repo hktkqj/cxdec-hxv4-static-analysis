@@ -26,7 +26,7 @@ SabbatOfTheWitch.exe (TVP/Kirikiri 引擎)
 
 游戏主程序 `SabbatOfTheWitch.exe` 使用 `.bind` 段自加密。入口点 `0x8E4310` 调用 `bind_unpack_loader (0x8E4390)` 解密/装载真实 PE，重建导入表后跳转到 OEP `0x639653`。
 
-> **详细文档**：见 [XP3Extract.md](XP3Extract.md#附录-a—脱壳流程) 附录 A
+> **详细文档**：见 [XP3Extract.md](XP3Extract.md#附录-a-—-脱壳流程) 附录 A
 
 关键步骤：
 
@@ -65,7 +65,7 @@ XP3 Header:
 
 Index 中包含标准 chunk：`File` / `info` / `segm` / `adlr`，以及游戏自定义 chunk `Hxv4`。
 
-> **详细文档**：[XP3Extract.md](XP3Extract.md#32-index-解析)
+> **详细文档**：[XP3Extract.md](XP3Extract.md#32-index-内部结构)
 
 关键实现：
 
@@ -124,7 +124,7 @@ Hxv4 descriptor (14 bytes):
   zlib stream → big-endian TJS binary Variant
 ```
 
-> **详细文档**：[Hxv4Ripped.md](Hxv4Ripped.md#一hxv4-映射表结构)
+> **详细文档**：[Hxv4 映射表结构](hxv4/01-hxv4-table.md)
 
 关键实现：
 
@@ -175,7 +175,7 @@ DripValueImpl_get64_from_u32(value):
 
 所有算术按 32-bit unsigned wrap，右移为逻辑右移。
 
-> **详细文档**：[Hxv4Ripped.md](Hxv4Ripped.md#二dripvalue-vm-密钥派生)
+> **详细文档**：[DripValue VM 密钥派生](hxv4/04-dripvalue-vm.md)
 
 关键实现：
 
@@ -205,7 +205,7 @@ BuildFilterStateFromUniqueKey(state48, key64, open_flag):
     +0x2D  null_mode = 0
 ```
 
-> **详细文档**：[Hxv4Ripped.md](Hxv4Ripped.md#三buildfilterstatefromuniquekey)
+> **详细文档**：[BuildFilterStateFromUniqueKey](hxv4/05-filter-state.md)
 
 关键实现：
 
@@ -234,7 +234,7 @@ BuildFilterStateFromUniqueKey(state48, key64, open_flag):
 
 若读取范围覆盖 `pos0` 或 `pos1` 位置，额外单字节异或 `byte0` / `byte1`。
 
-> **详细文档**：[Hxv4Ripped.md](Hxv4Ripped.md#四filterimpl—stream-xor-transform)
+> **详细文档**：[FilterImpl - Stream XOR Transform](hxv4/06-stream-filter.md)
 
 关键实现：
 
@@ -262,7 +262,7 @@ dump 捕获:
     → 生成 drip_program.json
 ```
 
-> **详细文档**：[TryItOut.md](../usage/TryItOut.md#步骤-a从运行时-dump-导出-drip-program)
+> **详细文档**：[DeriveFilterManager LiveDump Flow](../live_dump/DeriveFilterManager_LiveDump.md#运行时抓参脚本)
 
 关键脚本：
 
@@ -304,7 +304,7 @@ XP3 文件 (raw bytes)
   → 原始明文资源 ✓
 ```
 
-> **完整命令参考**：[TryItOut.md](../usage/TryItOut.md#步骤-c离线提取)
+> **完整命令参考**：[TryItOut.md](../usage/TryItOut.md#4-xp3-查看、验证和提取)
 
 ---
 

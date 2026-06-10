@@ -120,7 +120,7 @@ off_FD2C0C = sub_C755F0;                            // 存储相关
 
 ## 四、不同资源类型的文件名补全规则
 
-### 4.1 已确认规则（来自 [[Hxv4Ripped.md]] Section 9.8）
+### 4.1 已确认规则（来自 [FileHash / PathHash 算法](hxv4/03-resource-hash.md#38-不同资源类型的-filename-补全规则)）
 
 | 资源类型 | 裸逻辑名 | 参与 fileHash() 的 filename | XP3 包 | 证据 |
 |----------|---------|---------------------------|--------|------|
@@ -166,7 +166,7 @@ WaveSoundBuffer.open()           — TJS 方法
 
 ### 4.4 路径/域名补全规则
 
-来自 [[Hxv4Ripped.md]] Section 9.5：
+来自 [FileHash / PathHash 算法](hxv4/03-resource-hash.md)：
 
 - 初始自动挂载 domain = `""`（空字符串）
 - `pathHash("")` → `94d4a97c61498621`（命中 bgm.xp3 / bgimage.xp3 所有 record）
@@ -234,7 +234,7 @@ WaveSoundBuffer.open()           — TJS 方法
 1. TJS/KAG 脚本请求资源
    - 例: KAG @bgm 命令触发 "bgm01" 的音频加载
    - TJS 层将 "bgm01" 补全为 "bgm01.opus"
-   
+
 2. 存储名构造
    - 完整存储名: arc://./bgm01.opus (或其他内部格式)
    - 通过 Storages.link() 已加载的 CompoundStorageMedia 插件处理
@@ -274,7 +274,7 @@ WaveSoundBuffer.open()           — TJS 方法
 
 2. **TJS 脚本中的扩展名补全**：`startup.tjs` 虽已解密但因为 TJS2 二进制格式无法直接阅读。需要用 TJS2 反编译器或从运行时内存 dump 中提取。
 
-3. **不同 XP3 包的 domain 对应关系**：Section 9.5 已确认 bgm.xp3 / bgimage.xp3 使用 domain=""，其他包是否也是如此需要逐一验证。
+3. **不同 XP3 包的 domain 对应关系**：[FileHash / PathHash 算法](hxv4/03-resource-hash.md) 已确认 bgm.xp3 / bgimage.xp3 使用 domain=""，其他包是否也是如此需要逐一验证。
 
 4. **KAG 插件 DLL**：KAG 引擎可能以独立 DLL 形式存在，其内也可能有文件名补全代码。
 
@@ -285,5 +285,6 @@ WaveSoundBuffer.open()           — TJS 方法
 - `src/common/xp3_inspect.py` — 离线解密/提取实现
 - `src/common/resource_hash.py` — SipHash/BLAKE2s 复现
 - `src/static_extract/compute_resource_hash.py` — 静态 hash 计算
-- `docs/core/Hxv4Ripped.md` — HXV4 加密体系完整文档
+- `docs/core/Hxv4Ripped.md` — Hxv4 加密体系总览和子文档入口
+- `docs/core/hxv4/` — Hxv4、资源哈希、DripValue、filter 和验证结果的拆分文档
 - `tools/FilterManagerDerive/` — 从 Bootstrap DLL 导出密钥
