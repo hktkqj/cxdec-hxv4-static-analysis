@@ -1,6 +1,6 @@
 # DripValue VM 密钥派生
 
-[返回 Hxv4 加密体系总览](../Hxv4Ripped.md) | 上一篇：[FileHash / PathHash 算法](03-resource-hash.md) | 下一篇：[BuildFilterStateFromUniqueKey](05-filter-state.md)
+[返回 Hxv4 加密体系总览](../Hxv4Ripped.md) | 上一篇：[Resource Path Resolution and FileHash / PathHash](03-resource-hash.md) | 下一篇：[BuildFilterStateFromUniqueKey](05-filter-state.md)
 
 
 DripValue VM 是内嵌在 DLL 中的自定义 32-bit 字节码解释器，用于从 64-bit 资源密钥派生流过滤器的种子参数。类名 "DripValueImpl" 来自 DLL 的 RTTI 虚表符号。

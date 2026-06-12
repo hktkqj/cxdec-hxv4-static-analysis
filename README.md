@@ -90,9 +90,8 @@ docs/
 │   └── Porting_Static_Flow.md            # 跨游戏适配流程
 ├── core/
 │   ├── Hxv4Ripped.md                     # Hxv4 / DripValue / FilterRuntimeState 总览
-│   ├── hxv4/                             # Hxv4 表、KDF、hash、VM、filter 拆分文档
+│   ├── hxv4/                             # Hxv4 表、KDF、资源路径/hash、VM、filter 拆分文档
 │   ├── XP3Extract.md                     # XP3 容器结构和提取行为
-│   ├── ResourcePathResolution.md         # 资源路径和哈希解析
 │   └── Reverse.md                        # 早期总体逆向记录
 ├── live_dump/
 │   └── DeriveFilterManager_LiveDump.md   # 动态 dump 旧路线

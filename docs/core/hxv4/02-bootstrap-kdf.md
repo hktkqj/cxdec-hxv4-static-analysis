@@ -1,6 +1,6 @@
 # Bootstrap 初始化与密钥派生
 
-[返回 Hxv4 加密体系总览](../Hxv4Ripped.md) | 上一篇：[Hxv4 映射表结构](01-hxv4-table.md) | 下一篇：[FileHash / PathHash 算法](03-resource-hash.md)
+[返回 Hxv4 加密体系总览](../Hxv4Ripped.md) | 上一篇：[Hxv4 映射表结构](01-hxv4-table.md) | 下一篇：[Resource Path Resolution and FileHash / PathHash](03-resource-hash.md)
 
 
 > 本节所有反编译输出来自 `mcp__ida-pro-mcp__decompile` 对 `1ae7153ed25d.dll.i64` 的实时 Hex-Rays 分析。
